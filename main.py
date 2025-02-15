@@ -1,6 +1,9 @@
 import os
 import json
 import logging
+import subprocess
+import tempfile
+import textwrap
 from io import BytesIO
 from typing import Dict, Any, List
 from datetime import datetime
@@ -26,6 +29,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
+from PyPDF2 import PdfMerger
 
 # Логтарды қосу (debug үшін)
 logging.basicConfig(
@@ -36,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Өз админ ID-іңізді қойыңыз
+ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
@@ -89,14 +93,18 @@ def save_user_lang(user_id: int, lang_code: str):
         json.dump(users, f)
 
 def save_stats(action: str):
-    stats = {"total": 0, "items": 0}
+    # Статистикаға: жалпы әрекет саны, элементтер саны және PDF файлдары саны бақыланады.
+    stats = {"total": 0, "items": 0, "pdf_count": 0}
     try:
         with open(STATS_FILE, "r") as f:
             stats = json.load(f)
     except Exception:
         pass
     stats["total"] += 1
-    stats["items"] += 1
+    if action == "item":
+        stats["items"] += 1
+    elif action == "pdf":
+        stats["pdf_count"] += 1
     with open(STATS_FILE, "w") as f:
         json.dump(stats, f)
 
@@ -109,15 +117,91 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
+def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
+    """
+    LibreOffice арқылы офис файлдарын PDF-ке айналдырады.
+    Бұл функция уақытты алады және уақытша файлдарды қолданады.
+    """
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(original_filename)[1]) as tmp_in:
+        tmp_in.write(bio.getbuffer())
+        tmp_in.flush()
+        input_path = tmp_in.name
+
+    output_dir = tempfile.gettempdir()
+    try:
+        # LibreOffice headless режимінде конвертация
+        subprocess.run([
+            "libreoffice", "--headless", "--convert-to", "pdf", "--outdir", output_dir, input_path
+        ], check=True)
+        # Шығу PDF файлының жолын алу
+        output_path = os.path.join(output_dir, os.path.splitext(os.path.basename(input_path))[0] + ".pdf")
+        with open(output_path, "rb") as f:
+            pdf_bytes = BytesIO(f.read())
+        return pdf_bytes
+    except Exception as e:
+        logger.error(f"Office to PDF conversion error: {e}")
+        # Егер конвертация сәтсіз болса, файлды мәтін ретінде сақтау
+        fallback = BytesIO()
+        fallback.write(f"Unable to convert file: {original_filename}".encode("utf-8"))
+        fallback.seek(0)
+        return fallback
+    finally:
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+
+def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
+    """
+    Егер элемент типі текст немесе фото болса, оны жеке PDF бетіне айналдырады.
+    Мәтін үшін автоматты түрде жолдарды орап шығу (wrap) қамтамасыз етіледі.
+    """
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    if item["type"] == "text":
+        c.setFont("NotoSans", 12)
+        # Ең алдымен, мәтінді алдын ала орап шығамыз (max 80 символ, бағанға байланысты)
+        wrapped_text = []
+        for line in item["content"].split("\n"):
+            wrapped_text.extend(textwrap.wrap(line, width=80))
+        y_position = height - 50
+        for line in wrapped_text:
+            c.drawString(40, y_position, line)
+            y_position -= 20
+            if y_position < 50:
+                c.showPage()
+                c.setFont("NotoSans", 12)
+                y_position = height - 50
+        c.showPage()
+    elif item["type"] == "photo":
+        try:
+            item["content"].seek(0)
+            img = Image.open(item["content"])
+            img_width, img_height = img.size
+            max_width = width - 80
+            max_height = height - 80
+            scale = min(max_width / img_width, max_height / img_height, 1)
+            new_width = img_width * scale
+            new_height = img_height * scale
+            x = (width - new_width) / 2
+            y = (height - new_height) / 2
+            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
+        except Exception as e:
+            c.setFont("NotoSans", 12)
+            c.drawString(40, height / 2, f"Error displaying image: {e}")
+        c.showPage()
+    c.save()
+    buffer.seek(0)
+    return buffer
+
 # --- Пайдаланушы интерфейсі ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Пайдаланушының тілі анықталады, егер жоқ болса DEFAULT_LANG
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Жаңа сессия үшін жинақталған элементтерді тазалаймыз
     user_data[user_id] = {"items": []}
-    # Алғашқы хабарлама: тіл таңдау және нұсқаулық
     await update.message.reply_text(
         trans["welcome"],
         reply_markup=language_keyboard()
@@ -150,29 +234,27 @@ async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT
         resize_keyboard=True
     )
     text = trans["instruction_initial"]
-    # Егер update.message жоқ болса (callbackQuery жағдайы)
     target = update.effective_message if update.effective_message else update.message
     await target.reply_text(text, reply_markup=keyboard)
 
 # --- Жинақтау және PDF жасау жүйесі ---
+
 async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    
-    # Егер "PDF-ке айналдыру" батырмасы басылса
-    if update.message.text and update.message.text.strip() == trans["btn_convert_pdf"]:
+    msg_text = update.message.text.strip() if update.message.text else ""
+    # Егер "PDF-ке айналдыру" батырмасы басылса:
+    if msg_text == trans["btn_convert_pdf"]:
         return await convert_pdf(update, context)
-    # Егер "Тіл ауыстыру" немесе "Көмек" батырмасы басылса, тиісті функция шақырылсын
-    if update.message.text and update.message.text.strip() == trans["btn_change_lang"]:
+    if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
-    if update.message.text and update.message.text.strip() == trans["btn_help"]:
+    if msg_text == trans["btn_help"]:
         return await trigger_help(update, context)
     
-    # Кірген хабарламаны өңдеу (мәтін, фото, құжат)
+    # Хабарлама – мәтін, фото немесе құжат:
     await process_incoming_item(update, context)
-    
-    # Жиналғаннан кейінгі хабарлама мен батырмалар:
+    # Әрбір хабарламадан кейін тек бір рет жаңартылған нұсқау хабарламасы жіберіледі.
     keyboard = ReplyKeyboardMarkup(
         [[trans["btn_convert_pdf"]],
          [trans["btn_change_lang"], trans["btn_help"]]],
@@ -188,7 +270,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     if "items" not in user_data.get(user_id, {}):
         user_data[user_id] = {"items": []}
     
-    # Мәтін
+    # Мәтін (файл емес)
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
@@ -200,7 +282,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
-    # Құжат
+    # Құжаттар: PDF, Office (Word, PowerPoint) немесе басқалар
     elif update.message.document:
         doc = update.message.document
         filename = doc.file_name.lower()
@@ -211,19 +293,19 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
-        elif ext == ".txt":
-            try:
-                content = bio.read().decode("utf-8")
-            except Exception:
-                content = "Мәтінді оқу мүмкін емес."
-            item = {"type": "text", "content": content}
+        elif ext == ".pdf":
+            item = {"type": "pdf", "content": bio}
+        elif ext in [".doc", ".docx", ".ppt", ".pptx"]:
+            converted = convert_office_to_pdf(bio, filename)
+            item = {"type": "pdf", "content": converted}
         else:
+            # Басқа файлдарды мәтін ретінде хабарламамен тіркейміз
             item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
 async def convert_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Жинақталған барлық элементтерді PDF-ке біріктіріп, жіберу."""
+    """Жинақталған барлық элементтерді біріктіріп PDF құжатын жасайды."""
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
@@ -232,50 +314,45 @@ async def convert_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    pdf_buffer = BytesIO()
-    c = canvas.Canvas(pdf_buffer, pagesize=A4)
-    width, height = A4
-
+    # Жүктелу индикаторы хабарламасы:
+    loading_msg = await update.effective_chat.send_message("Generating PDF... ⏳")
+    
+    # Әрбір элемент үшін жеке PDF файлын құрамыз:
+    pdf_list = []
     for item in items:
-        if item["type"] == "text":
-            c.setFont("NotoSans", 12)
-            text_lines = item["content"].split("\n")
-            y_position = height - 50
-            for line in text_lines:
-                c.drawString(40, y_position, line)
-                y_position -= 20
-                if y_position < 50:
-                    c.showPage()
-                    c.setFont("NotoSans", 12)
-                    y_position = height - 50
-            c.showPage()
-        elif item["type"] == "photo":
-            try:
-                item["content"].seek(0)
-                img = Image.open(item["content"])
-                img_width, img_height = img.size
-                max_width = width - 80
-                max_height = height - 80
-                scale = min(max_width / img_width, max_height / img_height, 1)
-                new_width = img_width * scale
-                new_height = img_height * scale
-                x = (width - new_width) / 2
-                y = (height - new_height) / 2
-                c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
-            except Exception as e:
-                c.setFont("NotoSans", 12)
-                c.drawString(40, height / 2, f"Суретті шығару мүмкін емес: {e}")
-            c.showPage()
-    c.save()
-    pdf_buffer.seek(0)
+        if item["type"] in ["text", "photo"]:
+            pdf_file = generate_item_pdf(item)
+            pdf_list.append(pdf_file)
+        elif item["type"] == "pdf":
+            # Егер элемент PDF болса, оны тікелей қосамыз
+            pdf_list.append(item["content"])
+    
+    # PDF файлдарын біріктіру үшін PdfMerger қолданылады
+    merger = PdfMerger()
+    for pdf_io in pdf_list:
+        merger.append(pdf_io)
+    output_buffer = BytesIO()
+    merger.write(output_buffer)
+    merger.close()
+    output_buffer.seek(0)
+    
+    # PDF файлдарының санын статистикаға жазамыз
+    save_stats("pdf")
     
     filename = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    # Соңғы нәтиже жіберілетін хабарлама
     await update.message.reply_document(
-        document=pdf_buffer,
+        document=output_buffer,
         filename=filename,
         caption=trans["pdf_ready"]
     )
-    # Буферді тазалау және бастапқы нұсқа қайта шығару
+    # Жүктелу индикаторы хабарламасын өшіреміз немесе оны соңында жаңартамыз:
+    try:
+        await loading_msg.edit_text("PDF generation complete! ✅")
+    except Exception:
+        pass
+
+    # Буферді тазалап, бастапқы нұсқа қайта шығарамыз
     user_data[user_id]["items"] = []
     await update.message.reply_text(
         trans["instruction_initial"],
@@ -305,7 +382,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Админ мәзірі үшін инлайн батырмалар:
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔀 Форвард хабарлама", callback_data="admin_forward")],
@@ -339,13 +415,12 @@ async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ADMIN_MENU
 
 async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Админ жіберген хабарламаны барлық пайдаланушыларға таратады."""
     admin_msg = update.message.text
     user_ids = get_all_users()
     sent = 0
     for uid in user_ids:
         try:
-            await context.bot.send_message(chat_id=uid, text=f"[Хабарлама админнен]\n\n{admin_msg}")
+            await context.bot.send_message(chat_id=uid, text=f"[Админ хабарламасы]\n\n{admin_msg}")
             sent += 1
         except Exception as e:
             logger.error(f"Error sending broadcast to {uid}: {e}")
@@ -353,8 +428,6 @@ async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_
     return ADMIN_MENU
 
 async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Админ жіберген хабарламаны барлық пайдаланушыларға форвардтайды."""
-    # Мұнда admin хабарламасы update.message арқылы келеді.
     admin_msg: Message = update.message
     user_ids = get_all_users()
     forwarded = 0
@@ -372,14 +445,13 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(STATS_FILE, "r") as f:
             stats = json.load(f)
     except Exception:
-        stats = {"total": 0, "items": 0}
+        stats = {"total": 0, "items": 0, "pdf_count": 0}
     try:
         with open(USERS_FILE, "r") as f:
             users = json.load(f)
     except Exception:
         users = {}
     total_users = len(users)
-    # Тілдер бойынша есептеу
     language_counts = {}
     for lang in users.values():
         language_counts[lang] = language_counts.get(lang, 0) + 1
@@ -388,6 +460,7 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 Толық статистика:\n"
         f"• Жалпы әрекет саны: {stats.get('total', 0)}\n"
         f"• Жинақталған элементтер: {stats.get('items', 0)}\n"
+        f"• PDF файлдар саны: {stats.get('pdf_count', 0)}\n"
         f"• Пайдаланушылар саны: {total_users}\n"
     )
     for lang, count in language_counts.items():
@@ -399,7 +472,7 @@ async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Админ панелі жабылды.")
     return ConversationHandler.END
 
-# --- Фоллбэк (бас тарту) ---
+# --- Фоллбэк ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_data:
@@ -448,7 +521,6 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     # --- Сервермен байланыс ---
-    # Егер WEBHOOK_URL анықталса, вебхук арқылы жұмыс істейді; әйтпесе, polling қолданылады.
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
             listen="0.0.0.0",
