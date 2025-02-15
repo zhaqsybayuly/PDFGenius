@@ -149,15 +149,16 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if text == trans["btn_help"]:
         return await trigger_help(update, context)
     
-    # Әйтпесе, хабарлама – бұл файл, сурет немесе мәтін
+    # Хабарлама – файл, сурет немесе мәтін, оны өңдеп жинаймыз
     await process_incoming_item(update, context)
-    # Жіберілгеннен кейін, жаңартылған нұсқау хабарламасын жібереміз
+    # Жинақталғаннан кейін, жаңартылған нұсқау хабарламасын жібереміз
     keyboard = ReplyKeyboardMarkup(
         [[trans["btn_convert_pdf"]],
          [trans["btn_change_lang"], trans["btn_help"]]],
         resize_keyboard=True
     )
-    await update.message.reply_text(trans["instruction_accumulated"], reply_markup=keyboard)
+    # update.effective_chat.send_message() арқылы жібереміз:
+    await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
     return STATE_ACCUMULATE
 
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
