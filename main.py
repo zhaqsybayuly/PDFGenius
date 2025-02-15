@@ -16,7 +16,7 @@ from reportlab.lib.pagesizes import A4
 from io import BytesIO
 
 # Конфигурация
-BOT_TOKEN = os.getenv("7150129034:AAFAFeu2nuMKxUHYkVeoryrq0wHfZR6SnFg")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = "5316060523"  # Мысалы: "123456789"
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
