@@ -56,7 +56,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешім
+GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешімді сұрау
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
@@ -72,7 +72,7 @@ user_data: Dict[int, Dict[str, Any]] = {}
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын "sanitize" функциясы ---
+# --- Файл атауын өңдеу ---
 def sanitize_filename(name: str) -> str:
     """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
     name = name.strip().lower().replace(" ", "_")
@@ -346,6 +346,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
         elif ext == ".pdf":
+            # PDF-ті әр бетке бөліп, сурет ретінде өңдейміз
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
@@ -384,7 +385,6 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Кәдімгі ReplyKeyboard қолданамыз
     keyboard = ReplyKeyboardMarkup(
         [[trans["filename_yes"], trans["filename_no"]]],
         one_time_keyboard=True,
@@ -395,6 +395,7 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_response = update.message.text.strip()
+    logger.info(f"Filename decision received: {user_response}")
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
