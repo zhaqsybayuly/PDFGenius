@@ -314,36 +314,36 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
+    
+# --- Файл атауын сұрау диалогы ---
 
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Сұрақ: Файлға атау бересіз бе?
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Иә", callback_data="filename_yes"),
-         InlineKeyboardButton("Жоқ", callback_data="filename_no")]
+        [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
+         InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
     ])
-    await update.message.reply_text("Файлға атау бересіз бе?", reply_markup=keyboard)
+    await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME
 
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "filename_yes":
-        # Пайдаланушыдан файл атауын сұраймыз:
-        await query.edit_message_text("Файлдың атауын жазыңыз:")
+        await query.edit_message_text(query.message.text + "\n" + " " + trans["enter_filename"])
+        # "enter_filename" кілті арқылы пайдаланушыдан атау енгізуді сұраймыз
         return GET_FILENAME
     elif query.data == "filename_no":
-        # Әдепкі атаумен конвертацияға өтеміз:
         return await perform_pdf_conversion(update, context, None)
     else:
         return GET_FILENAME
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Пайдаланушы енгізген текст файл атауы ретінде қабылданады.
     file_name = update.message.text.strip()
     return await perform_pdf_conversion(update, context, file_name)
+
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     user_id = update.effective_user.id
