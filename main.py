@@ -9,6 +9,8 @@ import shutil
 from io import BytesIO
 from typing import Dict, Any, List
 from datetime import datetime
+
+import fitz  # PyMuPDF
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -63,7 +65,7 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 # --- Глобалды деректер ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# ReportLab қаріптерін тіркеу (қаріп файлының жолын тексеріңіз!)
+# ReportLab қаріптерін тіркеу (қажетті TTF файлының жолын тексеріңіз!)
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
 # --- Көмекші функциялар ---
@@ -122,7 +124,7 @@ def get_all_users() -> List[int]:
 def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
     """
     LibreOffice арқылы офис файлдарын PDF-ке айналдырады.
-    Егер серверде libreoffice жоқ болса, сәйкес хабарлама қайтарады.
+    Егер серверде libreoffice орнатылмаса, хабарлама қайтарады.
     """
     if not shutil.which("libreoffice"):
         logger.error("LibreOffice is not installed on the server.")
@@ -157,10 +159,26 @@ def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
         except Exception:
             pass
 
+def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
+    """
+    PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады.
+    Бұл барлық беттерді A4 форматына бірдей масштабта бейнелеуге мүмкіндік береді.
+    """
+    images = []
+    try:
+        doc = fitz.open(stream=bio.getvalue(), filetype="pdf")
+        for page_num in range(doc.page_count):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap()
+            img_data = BytesIO(pix.tobytes("png"))
+            images.append(img_data)
+    except Exception as e:
+        logger.error(f"Error converting PDF to images: {e}")
+    return images
+
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """
     Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
-    Енді суреттерді масштабтау кезінде шағын суреттер де үлкейтіледі.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -186,7 +204,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             img_width, img_height = img.size
             max_width = width - 80
             max_height = height - 80
-            # Енді суреттерді үлкейтуге мүмкіндік береміз (1 шегі алынып тасталды)
+            # Екі объектты жақындатылған түрде көрсету үшін бірдей масштаб қолданамыз:
             scale = min(max_width / img_width, max_height / img_height)
             new_width = img_width * scale
             new_height = img_height * scale
@@ -219,16 +237,11 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
 
 async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
     """
-    Жүктеу кезінде, хабарламада құмсағат эмодзи (⌛) көрсетіліп, ол өзгермейді.
-    (Нүктелер орнына тек бір эмодзи пайдаланылады.)
+    PDF генерациясы кезінде хабарламада тек "⌛" эмодзи көрсетіліп, ол тұрақты қалады.
     """
+    # Бұл функция тек күту кезінде ештеңе өзгеріссіз "⌛" ұстайды.
     while not stop_event.is_set():
-        try:
-            # Егер хабарламада тек "⌛" көрсетілсе, оны өзгерту қажет емес, сондықтан жай күтеміз.
-            await asyncio.sleep(1)
-        except Exception as e:
-            logger.error(f"Error in loading animation: {e}")
-            break
+        await asyncio.sleep(1)
 
 # --- Пайдаланушы интерфейсі ---
 
@@ -287,7 +300,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await trigger_help(update, context)
     
     await process_incoming_item(update, context)
-    # Тек бірінші файл жіберілгенде инструкция хабарламасын жібереміз
+    # Тек бірінші файл келгенде ғана инструкция хабарламасы жіберіледі
     if not user_data[user_id].get("instruction_sent", False):
         keyboard = ReplyKeyboardMarkup(
             [[trans["btn_convert_pdf"]],
@@ -302,9 +315,11 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if "items" not in user_data.get(user_id, {}):
         user_data[user_id] = {"items": [], "instruction_sent": False}
+    # Мәтін
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
+    # Сурет
     elif update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         bio = BytesIO()
@@ -312,6 +327,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
+    # Құжаттар
     elif update.message.document:
         doc = update.message.document
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
@@ -325,14 +341,41 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
+            user_data[user_id]["items"].append(item)
         elif ext == ".pdf":
-            item = {"type": "pdf", "content": bio}
-        elif ext in [".doc", ".docx", ".ppt", ".pptx"]:
+            # PDF-ті әр бетке бөле отырып, сурет ретінде өңдейміз:
+            images = convert_pdf_item_to_images(bio)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+            else:
+                item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
+                user_data[user_id]["items"].append(item)
+        elif ext in [".doc", ".docx"]:
             converted = convert_office_to_pdf(bio, filename)
-            item = {"type": "pdf", "content": converted}
+            # Нәтижесінде алынған PDF-ті сурет ретінде өңдейміз:
+            images = convert_pdf_item_to_images(converted)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+            else:
+                item = {"type": "text", "content": f"DOCX файл қосылды: {doc.file_name}"}
+                user_data[user_id]["items"].append(item)
+        elif ext in [".ppt", ".pptx"]:
+            converted = convert_office_to_pdf(bio, filename)
+            images = convert_pdf_item_to_images(converted)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+            else:
+                item = {"type": "text", "content": f"PPTX файл қосылды: {doc.file_name}"}
+                user_data[user_id]["items"].append(item)
         else:
             item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
-        user_data[user_id]["items"].append(item)
+            user_data[user_id]["items"].append(item)
     save_stats("item")
 
 async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,7 +387,7 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Бастапқыда жүктеу кезінде тек "⌛" эмодзи хабарламасы көрсетіледі
+    # Жүктеу кезінде "⌛" эмодзи хабарламасы көрсетіледі
     loading_msg = await update.effective_chat.send_message("⌛")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -356,8 +399,6 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             if item["type"] in ["text", "photo"]:
                 pdf_file = generate_item_pdf(item)
                 pdf_list.append(pdf_file)
-            elif item["type"] == "pdf":
-                pdf_list.append(item["content"])
         except Exception as e:
             logger.error(f"Error generating PDF for item: {e}")
     try:
