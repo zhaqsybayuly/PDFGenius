@@ -16,6 +16,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     Message
 )
 from telegram.ext import (
@@ -54,14 +55,15 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME = 2   # Файл атауын енгізу диалог күйі
+GET_FILENAME_DECISION = 2  # Файл атауын беру туралы шешімді сұрау күйі
+GET_FILENAME_INPUT = 3     # Файл атауын енгізу күйі
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
 
 # --- Шектеулер ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
-MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 
 # --- Глобалды деректер ---
 user_data: Dict[int, Dict[str, Any]] = {}
@@ -205,7 +207,6 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             max_width = width - 80
             max_height = height - 80
             scale_down = min(max_width / img_width, max_height / img_height)
-            # Егер сурет кіші болса, оны 80%-ға үлкейтуге тырысамыз.
             scale = scale_down if scale_down < 1 else max(scale_down, 1.2)
             new_width = img_width * scale
             new_height = img_height * scale
@@ -374,24 +375,27 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
-         InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
-    ])
+    # ReplyKeyboardMarkup-ті қолданамыз
+    keyboard = ReplyKeyboardMarkup(
+        [[trans["filename_yes"], trans["filename_no"]]],
+        one_time_keyboard=True,
+        resize_keyboard=True
+    )
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME
 
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    lang_code = get_user_lang(query.from_user.id)
+    user_response = update.message.text.strip()
+    user_id = update.effective_user.id
+    lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    if query.data == "filename_yes":
-        await query.edit_message_text(trans["enter_filename"])
-        return GET_FILENAME
-    elif query.data == "filename_no":
+    if user_response.lower() == trans["filename_yes"].lower():
+        await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
+        return GET_FILENAME_INPUT
+    elif user_response.lower() == trans["filename_no"].lower():
         return await perform_pdf_conversion(update, context, None)
     else:
+        await update.message.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -465,9 +469,6 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     )
     return STATE_ACCUMULATE
-
-async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await convert_pdf_handler_with_name(update, context, None)
 
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -596,13 +597,19 @@ if __name__ == "__main__":
             STATE_ACCUMULATE: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
-            GET_FILENAME: [
-                CallbackQueryHandler(filename_decision_handler, pattern="^filename_"),
+            GET_FILENAME_DECISION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filename_decision_handler)
+            ],
+            GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
+    # Біз GET_FILENAME_DECISION күйін GET_FILENAME_DECISION деп анықтаймыз:
+    GET_FILENAME_DECISION = 2
+    GET_FILENAME_INPUT = 3
+
     application.add_handler(conv_handler)
 
     admin_conv_handler = ConversationHandler(
