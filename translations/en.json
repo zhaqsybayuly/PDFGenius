@@ -1,10 +1,22 @@
 {
-  "welcome": "👋 Welcome to PDF Genius Bot! Choose your language:",
-  "lang_selected": "✅ Language selected!",
-  "main_menu": "🏠 Main menu:",
-  "btn_photo": "📷 Photo to PDF",
-  "btn_text": "📝 Text to PDF",
+  "welcome": "👋 Welcome to PDF Genius bot! Please select a language:",
+  "lang_selected": "✅ Language successfully selected!",
+  "main_menu": "🏠 Main Menu:",
+  "btn_photo": "📷 Create PDF from Photos",
+  "btn_text": "📝 Create PDF from Text",
   "btn_change_lang": "🌐 Change Language",
+  "btn_help": "❓ Help",
   "photo_caption": "✅ Your PDF is ready!",
-  "text_caption": "📄 Your text in PDF format!"
+  "text_caption": "📄 Your text has been converted to PDF!",
+  "enter_filename": "📄 Please enter the PDF filename:",
+  "add_more": "✨ Add more photos",
+  "finish_pdf": "✅ Create PDF",
+  "pdf_ready": "🎉 Your PDF is ready!",
+  "error_no_data": "⚠️ Please add some photos before creating a PDF!",
+  "photo_prompt": "Please send your photos to create a PDF.",
+  "photo_added": "Photo added successfully!",
+  "photo_more_prompt": "You can send another photo or press the button to create the PDF.",
+  "invalid_option": "Invalid option, please choose one of the available buttons.",
+  "operation_cancelled": "Operation cancelled. Returning to main menu.",
+  "no_photos_error": "No photos received. Please send some photos first."
 }
