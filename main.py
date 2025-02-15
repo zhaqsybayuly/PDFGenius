@@ -30,7 +30,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfMerger, PdfReadError
+from PyPDF2 import PdfMerger
 
 # Логтарды қосу
 logging.basicConfig(
@@ -62,7 +62,7 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 # --- Глобалды деректер ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# ReportLab қаріптерін тіркеу (Қаріп файлының жолын тексеріңіз!)
+# ReportLab қаріптерін тіркеу (қаріп файлының жолын тексеріңіз!)
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
 # --- Көмекші функциялар ---
@@ -193,17 +193,13 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
 def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     """
     PDF файлдарын біріктіріп, біртұтас PDF-ке айналдырады.
-    Егер файл жарамды болмаса, оны өткізіп жібереді.
     """
     merger = PdfMerger()
     for pdf_io in pdf_list:
         try:
-            # Тексеру: PdfMerger.append() ішіндегі файлды PdfReader арқылы оқып көрейік
             merger.append(pdf_io)
-        except PdfReadError as e:
-            logger.error(f"Skipping invalid PDF file: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error merging PDF: {e}")
+            logger.error(f"Skipping invalid PDF file: {e}")
     output_buffer = BytesIO()
     merger.write(output_buffer)
     merger.close()
@@ -212,13 +208,13 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
 
 async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
     """
-    Жүктеу кезінде, белгіленген хабарламаны әр секунд сайын "・", "・・", "・・・" ауыстырып жаңартып отырады.
+    Жүктеу кезінде хабарламада тек нүктелер ("・", "・・", "・・・") айналып отырады.
     """
     symbols = ["・", "・・", "・・・"]
     idx = 0
     while not stop_event.is_set():
         try:
-            new_text = f"Generating PDF... {symbols[idx % len(symbols)]}"
+            new_text = symbols[idx % len(symbols)]
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text)
         except Exception as e:
             logger.error(f"Error updating loading message: {e}")
@@ -294,11 +290,9 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = update.effective_user.id
     if "items" not in user_data.get(user_id, {}):
         user_data[user_id] = {"items": []}
-    # Мәтін (файл емес)
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
-    # Сурет
     elif update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         bio = BytesIO()
@@ -306,7 +300,6 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
-    # Құжат
     elif update.message.document:
         doc = update.message.document
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
@@ -339,12 +332,11 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Жүктеу анимациясын бастау
-    loading_msg = await update.effective_chat.send_message("Generating PDF... ・")
+    # Бастапқыда жүктеу анимациясын бастаймыз (тек нүктелер)
+    loading_msg = await update.effective_chat.send_message("・")
     stop_event = asyncio.Event()
     anim_task = asyncio.create_task(loading_animation(context, update.effective_chat.id, loading_msg.message_id, stop_event))
 
-    # Әр элемент үшін жеке PDF файлдарын құру
     pdf_list = []
     for item in items:
         try:
@@ -356,23 +348,21 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             logger.error(f"Error generating PDF for item: {e}")
     try:
-        # PDF біріктіруді executor-ға жібереміз (блоктан шығару)
         merged_pdf = await context.application.run_in_executor(None, merge_pdfs, pdf_list)
     except Exception as e:
         logger.error(f"Error merging PDFs: {e}")
         merged_pdf = None
 
-    stop_event.set()  # Анимацияны тоқтату
+    stop_event.set()
     try:
-        await loading_msg.edit_text("Generating PDF... complete! ✅")
-    except Exception:
-        pass
+        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
+    except Exception as e:
+        logger.error(f"Error deleting loading message: {e}")
 
     if not merged_pdf:
         await update.message.reply_text("PDF генерациясында қате шықты, қайта көріңіз.")
         return STATE_ACCUMULATE
 
-    # Шығатын PDF файлының өлшемін тексереміз
     merged_pdf.seek(0, os.SEEK_END)
     pdf_size = merged_pdf.tell()
     merged_pdf.seek(0)
