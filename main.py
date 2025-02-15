@@ -72,7 +72,7 @@ user_data: Dict[int, Dict[str, Any]] = {}
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын өңдеу ---
+# --- Файл атауын "sanitize" функциясы ---
 def sanitize_filename(name: str) -> str:
     """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
     name = name.strip().lower().replace(" ", "_")
@@ -133,43 +133,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
-    """
-    LibreOffice арқылы офис файлдарын PDF-ке айналдырады.
-    Егер серверде libreoffice орнатылмаса, хабарлама қайтарады.
-    """
-    if not shutil.which("libreoffice"):
-        logger.error("LibreOffice is not installed on the server.")
-        fallback = BytesIO()
-        fallback.write("Office file conversion is not supported on this server.".encode("utf-8"))
-        fallback.seek(0)
-        return fallback
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(original_filename)[1]) as tmp_in:
-        tmp_in.write(bio.getbuffer())
-        tmp_in.flush()
-        input_path = tmp_in.name
-
-    output_dir = tempfile.gettempdir()
-    try:
-        subprocess.run([
-            "libreoffice", "--headless", "--convert-to", "pdf", "--outdir", output_dir, input_path
-        ], check=True, timeout=30)
-        output_path = os.path.join(output_dir, os.path.splitext(os.path.basename(input_path))[0] + ".pdf")
-        with open(output_path, "rb") as f:
-            pdf_bytes = BytesIO(f.read())
-        return pdf_bytes
-    except Exception as e:
-        logger.error(f"Office to PDF conversion error: {e}")
-        fallback = BytesIO()
-        fallback.write(f"Unable to convert file: {original_filename}".encode("utf-8"))
-        fallback.seek(0)
-        return fallback
-    finally:
-        try:
-            os.remove(input_path)
-        except Exception:
-            pass
+# --- Office файлдары қажет емес, сондықтан сол кодты алып тастаймыз ---
 
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """
@@ -346,7 +310,6 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
         elif ext == ".pdf":
-            # PDF-ті әр бетке бөліп, сурет ретінде өңдейміз
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
@@ -355,26 +318,6 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             else:
                 item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
-        elif ext in [".doc", ".docx"]:
-            converted = convert_office_to_pdf(bio, filename)
-            images = convert_pdf_item_to_images(converted)
-            if images:
-                for img in images:
-                    item = {"type": "photo", "content": img}
-                    user_data[user_id]["items"].append(item)
-                return
-            else:
-                item = {"type": "text", "content": f"DOCX файл қосылды: {doc.file_name}"}
-        elif ext in [".ppt", ".pptx"]:
-            converted = convert_office_to_pdf(bio, filename)
-            images = convert_pdf_item_to_images(converted)
-            if images:
-                for img in images:
-                    item = {"type": "photo", "content": img}
-                    user_data[user_id]["items"].append(item)
-                return
-            else:
-                item = {"type": "text", "content": f"PPT файл қосылды: {doc.file_name}"}
         else:
             item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
         user_data[user_id]["items"].append(item)
@@ -385,6 +328,7 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
+    # ReplyKeyboard арқылы "Yes"/"No" батырмалары
     keyboard = ReplyKeyboardMarkup(
         [[trans["filename_yes"], trans["filename_no"]]],
         one_time_keyboard=True,
