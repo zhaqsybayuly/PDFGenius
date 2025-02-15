@@ -1,0 +1,22 @@
+{
+  "welcome": "👋 PDF Genius botiga xush kelibsiz! Iltimos, tilni tanlang:",
+  "lang_selected": "✅ Til muvaffaqiyatli tanlandi!",
+  "main_menu": "🏠 Asosiy menyu:",
+  "btn_photo": "📷 Rasmdan PDF yaratish",
+  "btn_text": "📝 Matndan PDF yaratish",
+  "btn_change_lang": "🌐 Tilni o'zgartirish",
+  "btn_help": "❓ Yordam",
+  "photo_caption": "✅ Sizning PDF faylingiz tayyor!",
+  "text_caption": "📄 Matningiz PDF formatida!",
+  "enter_filename": "📄 Iltimos, PDF fayl nomini kiriting:",
+  "add_more": "✨ Yana rasm qo'shish",
+  "finish_pdf": "✅ PDF yaratish",
+  "pdf_ready": "🎉 Sizning PDF tayyor!",
+  "error_no_data": "⚠️ PDF yaratish uchun avvalo rasm qo'shing!",
+  "photo_prompt": "Iltimos, PDF yaratish uchun rasmlaringizni yuboring.",
+  "photo_added": "Rasm muvaffaqiyatli qo'shildi!",
+  "photo_more_prompt": "Yana rasm yuborishingiz yoki PDF yaratish tugmasini bosishingiz mumkin.",
+  "invalid_option": "Noto'g'ri variant, iltimos mavjud tugmalardan birini tanlang.",
+  "operation_cancelled": "Amal bekor qilindi. Asosiy menyuga qaytilmoqda.",
+  "no_photos_error": "Rasmlar qabul qilinmadi. Avvalo rasm yuboring."
+}
