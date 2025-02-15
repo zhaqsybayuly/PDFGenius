@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import textwrap
 import asyncio
+import shutil
 from io import BytesIO
 from typing import Dict, Any, List
 from datetime import datetime
@@ -121,7 +122,15 @@ def get_all_users() -> List[int]:
 def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
     """
     LibreOffice арқылы офис файлдарын PDF-ке айналдырады.
+    Егер серверде libreoffice жоқ болса, сәйкес хабарлама қайтарады.
     """
+    if not shutil.which("libreoffice"):
+        logger.error("LibreOffice is not installed on the server.")
+        fallback = BytesIO()
+        fallback.write("Office file conversion is not supported on this server.".encode("utf-8"))
+        fallback.seek(0)
+        return fallback
+
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(original_filename)[1]) as tmp_in:
         tmp_in.write(bio.getbuffer())
         tmp_in.flush()
@@ -151,6 +160,7 @@ def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """
     Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
+    Енді суреттерді масштабтау кезінде шағын суреттер де үлкейтіледі.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -176,7 +186,8 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             img_width, img_height = img.size
             max_width = width - 80
             max_height = height - 80
-            scale = min(max_width / img_width, max_height / img_height, 1)
+            # Енді суреттерді үлкейтуге мүмкіндік береміз (1 шегі алынып тасталды)
+            scale = min(max_width / img_width, max_height / img_height)
             new_width = img_width * scale
             new_height = img_height * scale
             x = (width - new_width) / 2
@@ -206,13 +217,26 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     output_buffer.seek(0)
     return output_buffer
 
+async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
+    """
+    Жүктеу кезінде, хабарламада құмсағат эмодзи (⌛) көрсетіліп, ол өзгермейді.
+    (Нүктелер орнына тек бір эмодзи пайдаланылады.)
+    """
+    while not stop_event.is_set():
+        try:
+            # Егер хабарламада тек "⌛" көрсетілсе, оны өзгерту қажет емес, сондықтан жай күтеміз.
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Error in loading animation: {e}")
+            break
+
 # --- Пайдаланушы интерфейсі ---
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    user_data[user_id] = {"items": []}
+    user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(
         trans["welcome"],
         reply_markup=language_keyboard()
@@ -263,18 +287,21 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await trigger_help(update, context)
     
     await process_incoming_item(update, context)
-    keyboard = ReplyKeyboardMarkup(
-        [[trans["btn_convert_pdf"]],
-         [trans["btn_change_lang"], trans["btn_help"]]],
-        resize_keyboard=True
-    )
-    await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
+    # Тек бірінші файл жіберілгенде инструкция хабарламасын жібереміз
+    if not user_data[user_id].get("instruction_sent", False):
+        keyboard = ReplyKeyboardMarkup(
+            [[trans["btn_convert_pdf"]],
+             [trans["btn_change_lang"], trans["btn_help"]]],
+            resize_keyboard=True
+        )
+        await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
+        user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
 
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if "items" not in user_data.get(user_id, {}):
-        user_data[user_id] = {"items": []}
+        user_data[user_id] = {"items": [], "instruction_sent": False}
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
@@ -317,26 +344,29 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Жүктеу кезінде, жай ғана "⌛" эмодзи хабарламасы жіберіледі
+    # Бастапқыда жүктеу кезінде тек "⌛" эмодзи хабарламасы көрсетіледі
     loading_msg = await update.effective_chat.send_message("⌛")
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    anim_task = loop.create_task(loading_animation(context, update.effective_chat.id, loading_msg.message_id, stop_event))
+
+    pdf_list = []
+    for item in items:
+        try:
+            if item["type"] in ["text", "photo"]:
+                pdf_file = generate_item_pdf(item)
+                pdf_list.append(pdf_file)
+            elif item["type"] == "pdf":
+                pdf_list.append(item["content"])
+        except Exception as e:
+            logger.error(f"Error generating PDF for item: {e}")
     try:
-        pdf_list = []
-        for item in items:
-            try:
-                if item["type"] in ["text", "photo"]:
-                    pdf_file = generate_item_pdf(item)
-                    pdf_list.append(pdf_file)
-                elif item["type"] == "pdf":
-                    pdf_list.append(item["content"])
-            except Exception as e:
-                logger.error(f"Error generating PDF for item: {e}")
-        loop = asyncio.get_running_loop()
         merged_pdf = await loop.run_in_executor(None, merge_pdfs, pdf_list)
     except Exception as e:
         logger.error(f"Error merging PDFs: {e}")
         merged_pdf = None
 
-    # Жүктеу хабарламасын өшіреміз
+    stop_event.set()
     try:
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
     except Exception as e:
@@ -361,6 +391,7 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     save_stats("pdf")
     user_data[user_id]["items"] = []
+    user_data[user_id]["instruction_sent"] = False
     await update.message.reply_text(
         trans["instruction_initial"],
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
