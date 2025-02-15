@@ -205,6 +205,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             max_width = width - 80
             max_height = height - 80
             scale_down = min(max_width / img_width, max_height / img_height)
+            # Егер сурет кіші болса, оны 80%-ға үлкейтуге тырысамыз.
             scale = scale_down if scale_down < 1 else max(scale_down, 1.2)
             new_width = img_width * scale
             new_height = img_height * scale
@@ -213,7 +214,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
         except Exception as e:
             c.setFont("NotoSans", 12)
-            c.drawString(40, height/2, f"Error displaying image: {e}")
+            c.drawString(40, height / 2, f"Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -243,7 +244,6 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
         await asyncio.sleep(1)
 
 # --- Пайдаланушы интерфейсі ---
-
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -284,7 +284,92 @@ async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT
     target = update.effective_message if update.effective_message else update.message
     await target.reply_text(text, reply_markup=keyboard)
 
-# --- Функция: Файл атауын сұрау диалогы ---
+async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
+    msg_text = update.message.text.strip() if update.message.text else ""
+    if msg_text == trans["btn_convert_pdf"]:
+        return await ask_filename(update, context)
+    if msg_text == trans["btn_change_lang"]:
+        return await trigger_change_lang(update, context)
+    if msg_text == trans["btn_help"]:
+        return await trigger_help(update, context)
+    
+    await process_incoming_item(update, context)
+    if not user_data[user_id].get("instruction_sent", False):
+        keyboard = ReplyKeyboardMarkup(
+            [[trans["btn_convert_pdf"]],
+             [trans["btn_change_lang"], trans["btn_help"]]],
+            resize_keyboard=True
+        )
+        await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
+        user_data[user_id]["instruction_sent"] = True
+    return STATE_ACCUMULATE
+
+async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if "items" not in user_data.get(user_id, {}):
+        user_data[user_id] = {"items": [], "instruction_sent": False}
+    if update.message.text and not update.message.photo and not update.message.document:
+        item = {"type": "text", "content": update.message.text}
+        user_data[user_id]["items"].append(item)
+    elif update.message.photo:
+        photo_file = await update.message.photo[-1].get_file()
+        bio = BytesIO()
+        await photo_file.download_to_memory(bio)
+        bio.seek(0)
+        item = {"type": "photo", "content": bio}
+        user_data[user_id]["items"].append(item)
+    elif update.message.document:
+        doc = update.message.document
+        if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
+            await update.message.reply_text("Файлдың өлшемі 20 MB-тан аспауы керек.")
+            return
+        filename = doc.file_name.lower()
+        ext = os.path.splitext(filename)[1]
+        file_obj = await doc.get_file()
+        bio = BytesIO()
+        await file_obj.download_to_memory(bio)
+        bio.seek(0)
+        if ext in [".jpg", ".jpeg", ".png", ".gif"]:
+            item = {"type": "photo", "content": bio}
+        elif ext == ".pdf":
+            # PDF-ті әр бетке бөліп сурет ретінде өңдейміз
+            images = convert_pdf_item_to_images(bio)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+                return
+            else:
+                item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
+        elif ext in [".doc", ".docx"]:
+            converted = convert_office_to_pdf(bio, filename)
+            images = convert_pdf_item_to_images(converted)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+                return
+            else:
+                item = {"type": "text", "content": f"DOCX файл қосылды: {doc.file_name}"}
+        elif ext in [".ppt", ".pptx"]:
+            converted = convert_office_to_pdf(bio, filename)
+            images = convert_pdf_item_to_images(converted)
+            if images:
+                for img in images:
+                    item = {"type": "photo", "content": img}
+                    user_data[user_id]["items"].append(item)
+                return
+            else:
+                item = {"type": "text", "content": f"PPT файл қосылды: {doc.file_name}"}
+        else:
+            item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
+        user_data[user_id]["items"].append(item)
+    save_stats("item")
+
+# --- Файл атауын сұрау диалогы ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -299,7 +384,6 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Бұл жерде транслейшн функциясын қолдану үшін:
     lang_code = get_user_lang(query.from_user.id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
@@ -315,11 +399,7 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     return await perform_pdf_conversion(update, context, file_name)
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
-    # Егер атау енгізілмесе, әдепкі атауды қолданамыз
-    if file_name is None:
-        return await convert_pdf_handler_with_name(update, context, None)
-    else:
-        return await convert_pdf_handler_with_name(update, context, file_name)
+    return await convert_pdf_handler_with_name(update, context, file_name)
 
 async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     user_id = update.effective_user.id
