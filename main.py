@@ -206,21 +206,6 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     output_buffer.seek(0)
     return output_buffer
 
-async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
-    """
-    Жүктеу кезінде хабарламада тек нүктелер ("・", "・・", "・・・") айналып отырады.
-    """
-    symbols = ["・", "・・", "・・・"]
-    idx = 0
-    while not stop_event.is_set():
-        try:
-            new_text = symbols[idx % len(symbols)]
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text)
-        except Exception as e:
-            logger.error(f"Error updating loading message: {e}")
-        idx += 1
-        await asyncio.sleep(1)
-
 # --- Пайдаланушы интерфейсі ---
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,28 +317,26 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Бастапқыда жүктеу анимациясын бастаймыз (тек нүктелер)
-    loading_msg = await update.effective_chat.send_message("・")
-    stop_event = asyncio.Event()
-    anim_task = asyncio.create_task(loading_animation(context, update.effective_chat.id, loading_msg.message_id, stop_event))
-
-    pdf_list = []
-    for item in items:
-        try:
-            if item["type"] in ["text", "photo"]:
-                pdf_file = generate_item_pdf(item)
-                pdf_list.append(pdf_file)
-            elif item["type"] == "pdf":
-                pdf_list.append(item["content"])
-        except Exception as e:
-            logger.error(f"Error generating PDF for item: {e}")
+    # Жүктеу кезінде, жай ғана "⌛" эмодзи хабарламасы жіберіледі
+    loading_msg = await update.effective_chat.send_message("⌛")
     try:
-        merged_pdf = await context.application.run_in_executor(None, merge_pdfs, pdf_list)
+        pdf_list = []
+        for item in items:
+            try:
+                if item["type"] in ["text", "photo"]:
+                    pdf_file = generate_item_pdf(item)
+                    pdf_list.append(pdf_file)
+                elif item["type"] == "pdf":
+                    pdf_list.append(item["content"])
+            except Exception as e:
+                logger.error(f"Error generating PDF for item: {e}")
+        loop = asyncio.get_running_loop()
+        merged_pdf = await loop.run_in_executor(None, merge_pdfs, pdf_list)
     except Exception as e:
         logger.error(f"Error merging PDFs: {e}")
         merged_pdf = None
 
-    stop_event.set()
+    # Жүктеу хабарламасын өшіреміз
     try:
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
     except Exception as e:
