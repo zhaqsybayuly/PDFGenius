@@ -37,7 +37,7 @@ PHOTO_COLLECTION = 1
 
 # Глобалды айнымалылар
 user_data: Dict[int, Dict[str, Any]] = {}
-pdfmetrics.registerFont(TTFont('ArialUnicode', 'Arial-Unicode.ttf'))  # Unicode қаріпі
+pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))  # Файл жолын тексеріңіз!
 
 # -------------------- Көмекші функциялар --------------------
 def load_translations(lang_code: str) -> Dict[str, str]:
@@ -155,7 +155,7 @@ async def process_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     pdf_buffer = BytesIO()
     c = canvas.Canvas(pdf_buffer, pagesize=A4)
-    c.setFont("ArialUnicode", 12)
+    c.setFont("NotoSans", 12)
 
     y_position = 800
     for line in text.split("\n"):
