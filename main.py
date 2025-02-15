@@ -4,6 +4,7 @@ import logging
 import subprocess
 import tempfile
 import textwrap
+import asyncio
 from io import BytesIO
 from typing import Dict, Any, List
 from datetime import datetime
@@ -29,9 +30,9 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfMerger
+from PyPDF2 import PdfMerger, PdfReadError
 
-# Логтарды қосу (debug үшін)
+# Логтарды қосу
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -50,17 +51,18 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-
-# Админ панелі conversation күйлері
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
 
+# --- Шектеулер ---
+MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
+
 # --- Глобалды деректер ---
-# Әрбір пайдаланушының жинақталған элементтерін сақтаймыз
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# ReportLab қаріптерін тіркеу (қаріп файлының жолын тексеріңіз!)
+# ReportLab қаріптерін тіркеу (Қаріп файлының жолын тексеріңіз!)
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
 # --- Көмекші функциялар ---
@@ -93,7 +95,6 @@ def save_user_lang(user_id: int, lang_code: str):
         json.dump(users, f)
 
 def save_stats(action: str):
-    # Статистикаға: жалпы әрекет саны, элементтер саны және PDF файлдары саны бақыланады.
     stats = {"total": 0, "items": 0, "pdf_count": 0}
     try:
         with open(STATS_FILE, "r") as f:
@@ -120,7 +121,6 @@ def get_all_users() -> List[int]:
 def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
     """
     LibreOffice арқылы офис файлдарын PDF-ке айналдырады.
-    Бұл функция уақытты алады және уақытша файлдарды қолданады.
     """
     with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(original_filename)[1]) as tmp_in:
         tmp_in.write(bio.getbuffer())
@@ -129,18 +129,15 @@ def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
 
     output_dir = tempfile.gettempdir()
     try:
-        # LibreOffice headless режимінде конвертация
         subprocess.run([
             "libreoffice", "--headless", "--convert-to", "pdf", "--outdir", output_dir, input_path
-        ], check=True)
-        # Шығу PDF файлының жолын алу
+        ], check=True, timeout=30)
         output_path = os.path.join(output_dir, os.path.splitext(os.path.basename(input_path))[0] + ".pdf")
         with open(output_path, "rb") as f:
             pdf_bytes = BytesIO(f.read())
         return pdf_bytes
     except Exception as e:
         logger.error(f"Office to PDF conversion error: {e}")
-        # Егер конвертация сәтсіз болса, файлды мәтін ретінде сақтау
         fallback = BytesIO()
         fallback.write(f"Unable to convert file: {original_filename}".encode("utf-8"))
         fallback.seek(0)
@@ -153,15 +150,13 @@ def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
 
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """
-    Егер элемент типі текст немесе фото болса, оны жеке PDF бетіне айналдырады.
-    Мәтін үшін автоматты түрде жолдарды орап шығу (wrap) қамтамасыз етіледі.
+    Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     if item["type"] == "text":
         c.setFont("NotoSans", 12)
-        # Ең алдымен, мәтінді алдын ала орап шығамыз (max 80 символ, бағанға байланысты)
         wrapped_text = []
         for line in item["content"].split("\n"):
             wrapped_text.extend(textwrap.wrap(line, width=80))
@@ -195,9 +190,44 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     buffer.seek(0)
     return buffer
 
+def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
+    """
+    PDF файлдарын біріктіріп, біртұтас PDF-ке айналдырады.
+    Егер файл жарамды болмаса, оны өткізіп жібереді.
+    """
+    merger = PdfMerger()
+    for pdf_io in pdf_list:
+        try:
+            # Тексеру: PdfMerger.append() ішіндегі файлды PdfReader арқылы оқып көрейік
+            merger.append(pdf_io)
+        except PdfReadError as e:
+            logger.error(f"Skipping invalid PDF file: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error merging PDF: {e}")
+    output_buffer = BytesIO()
+    merger.write(output_buffer)
+    merger.close()
+    output_buffer.seek(0)
+    return output_buffer
+
+async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
+    """
+    Жүктеу кезінде, белгіленген хабарламаны әр секунд сайын "・", "・・", "・・・" ауыстырып жаңартып отырады.
+    """
+    symbols = ["・", "・・", "・・・"]
+    idx = 0
+    while not stop_event.is_set():
+        try:
+            new_text = f"Generating PDF... {symbols[idx % len(symbols)]}"
+            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=new_text)
+        except Exception as e:
+            logger.error(f"Error updating loading message: {e}")
+        idx += 1
+        await asyncio.sleep(1)
+
 # --- Пайдаланушы интерфейсі ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
@@ -244,17 +274,14 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
-    # Егер "PDF-ке айналдыру" батырмасы басылса:
     if msg_text == trans["btn_convert_pdf"]:
-        return await convert_pdf(update, context)
+        return await convert_pdf_handler(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
     if msg_text == trans["btn_help"]:
         return await trigger_help(update, context)
     
-    # Хабарлама – мәтін, фото немесе құжат:
     await process_incoming_item(update, context)
-    # Әрбір хабарламадан кейін тек бір рет жаңартылған нұсқау хабарламасы жіберіледі.
     keyboard = ReplyKeyboardMarkup(
         [[trans["btn_convert_pdf"]],
          [trans["btn_change_lang"], trans["btn_help"]]],
@@ -264,12 +291,9 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return STATE_ACCUMULATE
 
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кірген хабарламаны тиісті типке қарай жинаймыз."""
     user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
     if "items" not in user_data.get(user_id, {}):
         user_data[user_id] = {"items": []}
-    
     # Мәтін (файл емес)
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
@@ -282,9 +306,12 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
-    # Құжаттар: PDF, Office (Word, PowerPoint) немесе басқалар
+    # Құжат
     elif update.message.document:
         doc = update.message.document
+        if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
+            await update.message.reply_text("Файлдың өлшемі 20 MB-тан аспауы керек.")
+            return
         filename = doc.file_name.lower()
         ext = os.path.splitext(filename)[1]
         file_obj = await doc.get_file()
@@ -299,13 +326,11 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
             converted = convert_office_to_pdf(bio, filename)
             item = {"type": "pdf", "content": converted}
         else:
-            # Басқа файлдарды мәтін ретінде хабарламамен тіркейміз
             item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-async def convert_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Жинақталған барлық элементтерді біріктіріп PDF құжатын жасайды."""
+async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
@@ -314,45 +339,54 @@ async def convert_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Жүктелу индикаторы хабарламасы:
-    loading_msg = await update.effective_chat.send_message("Generating PDF... ⏳")
-    
-    # Әрбір элемент үшін жеке PDF файлын құрамыз:
+    # Жүктеу анимациясын бастау
+    loading_msg = await update.effective_chat.send_message("Generating PDF... ・")
+    stop_event = asyncio.Event()
+    anim_task = asyncio.create_task(loading_animation(context, update.effective_chat.id, loading_msg.message_id, stop_event))
+
+    # Әр элемент үшін жеке PDF файлдарын құру
     pdf_list = []
     for item in items:
-        if item["type"] in ["text", "photo"]:
-            pdf_file = generate_item_pdf(item)
-            pdf_list.append(pdf_file)
-        elif item["type"] == "pdf":
-            # Егер элемент PDF болса, оны тікелей қосамыз
-            pdf_list.append(item["content"])
-    
-    # PDF файлдарын біріктіру үшін PdfMerger қолданылады
-    merger = PdfMerger()
-    for pdf_io in pdf_list:
-        merger.append(pdf_io)
-    output_buffer = BytesIO()
-    merger.write(output_buffer)
-    merger.close()
-    output_buffer.seek(0)
-    
-    # PDF файлдарының санын статистикаға жазамыз
-    save_stats("pdf")
-    
-    filename = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-    # Соңғы нәтиже жіберілетін хабарлама
-    await update.message.reply_document(
-        document=output_buffer,
-        filename=filename,
-        caption=trans["pdf_ready"]
-    )
-    # Жүктелу индикаторы хабарламасын өшіреміз немесе оны соңында жаңартамыз:
+        try:
+            if item["type"] in ["text", "photo"]:
+                pdf_file = generate_item_pdf(item)
+                pdf_list.append(pdf_file)
+            elif item["type"] == "pdf":
+                pdf_list.append(item["content"])
+        except Exception as e:
+            logger.error(f"Error generating PDF for item: {e}")
     try:
-        await loading_msg.edit_text("PDF generation complete! ✅")
+        # PDF біріктіруді executor-ға жібереміз (блоктан шығару)
+        merged_pdf = await context.application.run_in_executor(None, merge_pdfs, pdf_list)
+    except Exception as e:
+        logger.error(f"Error merging PDFs: {e}")
+        merged_pdf = None
+
+    stop_event.set()  # Анимацияны тоқтату
+    try:
+        await loading_msg.edit_text("Generating PDF... complete! ✅")
     except Exception:
         pass
 
-    # Буферді тазалап, бастапқы нұсқа қайта шығарамыз
+    if not merged_pdf:
+        await update.message.reply_text("PDF генерациясында қате шықты, қайта көріңіз.")
+        return STATE_ACCUMULATE
+
+    # Шығатын PDF файлының өлшемін тексереміз
+    merged_pdf.seek(0, os.SEEK_END)
+    pdf_size = merged_pdf.tell()
+    merged_pdf.seek(0)
+    if pdf_size > MAX_OUTPUT_PDF_SIZE:
+        await update.message.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
+        return STATE_ACCUMULATE
+
+    filename = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    await update.message.reply_document(
+        document=merged_pdf,
+        filename=filename,
+        caption=trans["pdf_ready"]
+    )
+    save_stats("pdf")
     user_data[user_id]["items"] = []
     await update.message.reply_text(
         trans["instruction_initial"],
@@ -484,9 +518,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Пайдаланушыға арналған ConversationHandler (PDF жинау)
+    # Пайдаланушы ConversationHandler (PDF жинау)
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("start", start_handler)],
         states={
             STATE_ACCUMULATE: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
@@ -496,7 +530,7 @@ if __name__ == "__main__":
     )
     application.add_handler(conv_handler)
 
-    # Админ панелі ConversationHandler
+    # Админ ConversationHandler
     admin_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_panel)],
         states={
@@ -520,7 +554,7 @@ if __name__ == "__main__":
     # Егер басқа хабарламалар келсе, оларды жинақтау режиміне бағыттаймыз
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
-    # --- Сервермен байланыс ---
+    # Сервер режимі: WEBHOOK немесе polling
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
             listen="0.0.0.0",
