@@ -1,0 +1,22 @@
+{
+  "welcome": "👋 PDF Genius botuna hoş geldiniz! Lütfen bir dil seçin:",
+  "lang_selected": "✅ Dil başarıyla seçildi!",
+  "main_menu": "🏠 Ana Menü:",
+  "btn_photo": "📷 Fotoğraflardan PDF Oluştur",
+  "btn_text": "📝 Metinden PDF Oluştur",
+  "btn_change_lang": "🌐 Dili Değiştir",
+  "btn_help": "❓ Yardım",
+  "photo_caption": "✅ PDF dosyanız hazır!",
+  "text_caption": "📄 Metniniz PDF formatında!",
+  "enter_filename": "📄 Lütfen PDF dosya adını girin:",
+  "add_more": "✨ Daha fazla fotoğraf ekle",
+  "finish_pdf": "✅ PDF Oluştur",
+  "pdf_ready": "🎉 PDF dosyanız hazır!",
+  "error_no_data": "⚠️ Lütfen önce PDF oluşturmak için fotoğraf ekleyin!",
+  "photo_prompt": "PDF oluşturmak için lütfen fotoğraflarınızı gönderin.",
+  "photo_added": "Fotoğraf başarıyla eklendi!",
+  "photo_more_prompt": "Başka bir fotoğraf gönderebilir veya PDF oluştur düğmesine basabilirsiniz.",
+  "invalid_option": "Geçersiz seçenek, lütfen mevcut düğmelerden birini seçin.",
+  "operation_cancelled": "İşlem iptal edildi. Ana menüye dönülüyor.",
+  "no_photos_error": "Fotoğraf alınmadı. Lütfen önce fotoğraf gönderin."
+}
