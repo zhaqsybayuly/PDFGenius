@@ -72,7 +72,7 @@ user_data: Dict[int, Dict[str, Any]] = {}
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын "sanitize" функциясы ---
+# --- Файл атауын өңдеу ---
 def sanitize_filename(name: str) -> str:
     """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
     name = name.strip().lower().replace(" ", "_")
@@ -133,7 +133,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# --- Office файлдары қажет емес, сондықтан сол кодты алып тастаймыз ---
+# Office файлдарын өңдеуді алып тастаймыз.
 
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """
@@ -310,6 +310,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
         elif ext == ".pdf":
+            # PDF-ті әр бетке бөліп, сурет ретінде өңдейміз
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
