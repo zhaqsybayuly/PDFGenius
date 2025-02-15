@@ -6,6 +6,8 @@
   "btn_text": "📝 Create PDF from Text",
   "btn_change_lang": "🌐 Change Language",
   "btn_help": "❓ Help",
+  "btn_create_pdf": "✅ Create PDF",
+  "btn_cancel": "❌ Cancel",
   "photo_caption": "✅ Your PDF is ready!",
   "text_caption": "📄 Your text has been converted to PDF!",
   "enter_filename": "📄 Please enter the PDF filename:",
