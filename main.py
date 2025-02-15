@@ -35,7 +35,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 from PyPDF2 import PdfMerger
 
-# Логтарды қосу
+# --- Лог конфигурациясы ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -54,7 +54,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME = 2  # Файл атауын енгізу күйлері
+GET_FILENAME = 2   # Файл атауын енгізу диалог күйі
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
@@ -66,11 +66,10 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024  # 50 MB
 # --- Глобалды деректер ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# ReportLab қаріптерін тіркеу (қажетті TTF файлының жолын тексеріңіз!)
+# --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Көмекші функциялар ---
-
+# --- Аударма және көмекші функциялар ---
 def load_translations(lang_code: str) -> Dict[str, str]:
     try:
         with open(f"translations/{lang_code}.json", "r", encoding="utf-8") as f:
@@ -179,7 +178,7 @@ def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """
     Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
-    Суреттерді үйлесімді түрде масштабтау: егер үлкен болса кішірейтіледі, егер кіші болса 80%-ға үлкейтіледі.
+    Суреттер үйлесімді түрде масштабталады: үлкен суреттер кішірейтіледі, ал кіші суреттер 80%-ға үлкейтіледі.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -206,11 +205,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             max_width = width - 80
             max_height = height - 80
             scale_down = min(max_width / img_width, max_height / img_height)
-            if scale_down < 1:
-                scale = scale_down
-            else:
-                scale_up = min((max_width * 0.8) / img_width, (max_height * 0.8) / img_height)
-                scale = scale_up if scale_up > 1 else 1
+            scale = scale_down if scale_down < 1 else max(scale_down, 1.2)
             new_width = img_width * scale
             new_height = img_height * scale
             x = (width - new_width) / 2
@@ -218,7 +213,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
         except Exception as e:
             c.setFont("NotoSans", 12)
-            c.drawString(40, height / 2, f"Error displaying image: {e}")
+            c.drawString(40, height/2, f"Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -289,34 +284,7 @@ async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT
     target = update.effective_message if update.effective_message else update.message
     await target.reply_text(text, reply_markup=keyboard)
 
-# --- Жинақтау және PDF жасау жүйесі ---
-
-async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    msg_text = update.message.text.strip() if update.message.text else ""
-    if msg_text == trans["btn_convert_pdf"]:
-        # Трансформацияға өтпес бұрын, файлға атау беруді сұраймыз:
-        return await ask_filename(update, context)
-    if msg_text == trans["btn_change_lang"]:
-        return await trigger_change_lang(update, context)
-    if msg_text == trans["btn_help"]:
-        return await trigger_help(update, context)
-    
-    await process_incoming_item(update, context)
-    if not user_data[user_id].get("instruction_sent", False):
-        keyboard = ReplyKeyboardMarkup(
-            [[trans["btn_convert_pdf"]],
-             [trans["btn_change_lang"], trans["btn_help"]]],
-            resize_keyboard=True
-        )
-        await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
-        user_data[user_id]["instruction_sent"] = True
-    return STATE_ACCUMULATE
-    
-# --- Файл атауын сұрау диалогы ---
-
+# --- Функция: Файл атауын сұрау диалогы ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -331,9 +299,11 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    # Бұл жерде транслейшн функциясын қолдану үшін:
+    lang_code = get_user_lang(query.from_user.id)
+    trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        await query.edit_message_text(query.message.text + "\n" + " " + trans["enter_filename"])
-        # "enter_filename" кілті арқылы пайдаланушыдан атау енгізуді сұраймыз
+        await query.edit_message_text(trans["enter_filename"])
         return GET_FILENAME
     elif query.data == "filename_no":
         return await perform_pdf_conversion(update, context, None)
@@ -344,8 +314,14 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     file_name = update.message.text.strip()
     return await perform_pdf_conversion(update, context, file_name)
 
-
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
+    # Егер атау енгізілмесе, әдепкі атауды қолданамыз
+    if file_name is None:
+        return await convert_pdf_handler_with_name(update, context, None)
+    else:
+        return await convert_pdf_handler_with_name(update, context, file_name)
+
+async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
@@ -354,7 +330,6 @@ async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Жүктеу кезінде "⌛" эмодзи хабарламасы
     loading_msg = await update.effective_chat.send_message("⌛")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -394,7 +369,6 @@ async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_T
     if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     else:
-        # Егер пайдаланушы атау енгізсе, оның кеңейтімін .pdf деп орнатамыз:
         if not file_name.lower().endswith(".pdf"):
             file_name += ".pdf"
 
@@ -412,6 +386,9 @@ async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_T
     )
     return STATE_ACCUMULATE
 
+async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await convert_pdf_handler_with_name(update, context, None)
+
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -426,8 +403,7 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(trans["help_text"])
     return STATE_ACCUMULATE
 
-# --- Жетілдірілген админ панелі ---
-
+# --- Админ панелі ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
@@ -450,7 +426,6 @@ async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     data = query.data
-
     if data == "admin_broadcast":
         await query.edit_message_text("Жібергіңіз келетін хабарламаны енгізіңіз (барлық пайдаланушыларға жіберіледі):")
         return ADMIN_BROADCAST
@@ -507,7 +482,6 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     language_counts = {}
     for lang in users.values():
         language_counts[lang] = language_counts.get(lang, 0) + 1
-
     stat_text = (
         f"📊 Толық статистика:\n"
         f"• Жалпы әрекет саны: {stats.get('total', 0)}\n"
