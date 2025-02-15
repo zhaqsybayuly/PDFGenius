@@ -1,0 +1,10 @@
+{
+  "welcome": "👋 Welcome to PDF Genius Bot! Choose your language:",
+  "lang_selected": "✅ Language selected!",
+  "main_menu": "🏠 Main menu:",
+  "btn_photo": "📷 Photo to PDF",
+  "btn_text": "📝 Text to PDF",
+  "btn_change_lang": "🌐 Change Language",
+  "photo_caption": "✅ Your PDF is ready!",
+  "text_caption": "📄 Your text in PDF format!"
+}
