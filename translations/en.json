@@ -3,11 +3,11 @@
   "lang_selected": "✅ Language successfully selected!",
   "choose_language": "Please select a language:",
   "instruction_initial": "Send a file, photo, or text and I will combine them into one PDF file for you.",
-  "instruction_accumulated": "Your materials are ready to be converted to PDF. Send more items or press the 'Convert to PDF' button.",
+  "instruction_accumulated": "Your materials are ready for PDF conversion. Send more items or press the 'Convert to PDF' button.",
   "btn_change_lang": "🌐 Change Language",
   "btn_help": "❓ Help",
   "btn_convert_pdf": "📄 Convert to PDF",
   "pdf_ready": "🎉 Your PDF is ready!",
-  "help_text": "To use this bot, send any file, photo or text. Use the buttons below for language change or help.",
+  "help_text": "To use this bot, simply send any file, photo, or text. Use the buttons below for language change or help.",
   "no_items_error": "No items received. Please send a file, photo, or text."
 }
