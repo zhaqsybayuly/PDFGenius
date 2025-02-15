@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -18,7 +17,7 @@ from io import BytesIO
 
 # Конфигурация
 BOT_TOKEN = os.getenv("7150129034:AAFAFeu2nuMKxUHYkVeoryrq0wHfZR6SnFg")
-ADMIN_ID = "5316060523"  # ТЕЛЕГРАМ ID-ңызды қойыңыз (бот @userinfobot арқылы білуге болады)
+ADMIN_ID = "5316060523"  # Мысалы: "123456789"
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
@@ -88,7 +87,6 @@ def main_menu(user_lang):
 # Старт командасы
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Пайдаланушы тілін тексеру
     try:
         with open(USERS_FILE, "r") as f:
             users = json.load(f)
@@ -108,7 +106,6 @@ async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang_code = query.data.split("_")[1]
     user_id = query.from_user.id
     
-    # Пайдаланушы тілін сақтау
     try:
         with open(USERS_FILE, "r") as f:
             users = json.load(f)
