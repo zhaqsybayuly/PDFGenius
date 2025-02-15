@@ -6,6 +6,7 @@ import tempfile
 import textwrap
 import asyncio
 import shutil
+import re
 from io import BytesIO
 from typing import Dict, Any, List
 from datetime import datetime
@@ -55,8 +56,8 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2  # Файл атауын беру туралы шешімді сұрау күйі
-GET_FILENAME_INPUT = 3     # Файл атауын енгізу күйі
+GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешім
+GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
@@ -70,6 +71,15 @@ user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
+
+# --- Файл атауын "sanitize" функциясы ---
+def sanitize_filename(name: str) -> str:
+    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
+    name = name.strip().lower().replace(" ", "_")
+    name = re.sub(r'[^a-z0-9_\-\.]', '', name)
+    if len(name) > 50:
+        name = name[:50]
+    return name
 
 # --- Аударма және көмекші функциялар ---
 def load_translations(lang_code: str) -> Dict[str, str]:
@@ -215,7 +225,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
         except Exception as e:
             c.setFont("NotoSans", 12)
-            c.drawString(40, height / 2, f"Error displaying image: {e}")
+            c.drawString(40, height/2, f"Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -336,7 +346,6 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
         elif ext == ".pdf":
-            # PDF-ті әр бетке бөліп сурет ретінде өңдейміз
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
@@ -375,14 +384,14 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # ReplyKeyboardMarkup-ті қолданамыз
+    # Кәдімгі ReplyKeyboard қолданамыз
     keyboard = ReplyKeyboardMarkup(
         [[trans["filename_yes"], trans["filename_no"]]],
         one_time_keyboard=True,
         resize_keyboard=True
     )
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
-    return GET_FILENAME
+    return GET_FILENAME_DECISION
 
 async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_response = update.message.text.strip()
@@ -396,10 +405,11 @@ async def filename_decision_handler(update: Update, context: ContextTypes.DEFAUL
         return await perform_pdf_conversion(update, context, None)
     else:
         await update.message.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
-        return GET_FILENAME
+        return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
+    file_name = sanitize_filename(file_name)
     return await perform_pdf_conversion(update, context, file_name)
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
@@ -469,6 +479,9 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     )
     return STATE_ACCUMULATE
+
+async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await convert_pdf_handler_with_name(update, context, None)
 
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -606,10 +619,6 @@ if __name__ == "__main__":
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-    # Біз GET_FILENAME_DECISION күйін GET_FILENAME_DECISION деп анықтаймыз:
-    GET_FILENAME_DECISION = 2
-    GET_FILENAME_INPUT = 3
-
     application.add_handler(conv_handler)
 
     admin_conv_handler = ConversationHandler(
