@@ -54,6 +54,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
+GET_FILENAME = 2  # Файл атауын енгізу күйлері
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
@@ -162,7 +163,6 @@ def convert_office_to_pdf(bio: BytesIO, original_filename: str) -> BytesIO:
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """
     PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады.
-    Бұл барлық беттерді A4 форматына бірдей масштабта бейнелеуге мүмкіндік береді.
     """
     images = []
     try:
@@ -179,6 +179,7 @@ def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """
     Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
+    Суреттерді үйлесімді түрде масштабтау: егер үлкен болса кішірейтіледі, егер кіші болса 80%-ға үлкейтіледі.
     """
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
@@ -204,8 +205,12 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             img_width, img_height = img.size
             max_width = width - 80
             max_height = height - 80
-            # Екі объектты жақындатылған түрде көрсету үшін бірдей масштаб қолданамыз:
-            scale = min(max_width / img_width, max_height / img_height)
+            scale_down = min(max_width / img_width, max_height / img_height)
+            if scale_down < 1:
+                scale = scale_down
+            else:
+                scale_up = min((max_width * 0.8) / img_width, (max_height * 0.8) / img_height)
+                scale = scale_up if scale_up > 1 else 1
             new_width = img_width * scale
             new_height = img_height * scale
             x = (width - new_width) / 2
@@ -239,7 +244,6 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
     """
     PDF генерациясы кезінде хабарламада тек "⌛" эмодзи көрсетіліп, ол тұрақты қалады.
     """
-    # Бұл функция тек күту кезінде ештеңе өзгеріссіз "⌛" ұстайды.
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
@@ -293,14 +297,14 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
-        return await convert_pdf_handler(update, context)
+        # Трансформацияға өтпес бұрын, файлға атау беруді сұраймыз:
+        return await ask_filename(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
     if msg_text == trans["btn_help"]:
         return await trigger_help(update, context)
     
     await process_incoming_item(update, context)
-    # Тек бірінші файл келгенде ғана инструкция хабарламасы жіберіледі
     if not user_data[user_id].get("instruction_sent", False):
         keyboard = ReplyKeyboardMarkup(
             [[trans["btn_convert_pdf"]],
@@ -311,74 +315,37 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
 
-async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if "items" not in user_data.get(user_id, {}):
-        user_data[user_id] = {"items": [], "instruction_sent": False}
-    # Мәтін
-    if update.message.text and not update.message.photo and not update.message.document:
-        item = {"type": "text", "content": update.message.text}
-        user_data[user_id]["items"].append(item)
-    # Сурет
-    elif update.message.photo:
-        photo_file = await update.message.photo[-1].get_file()
-        bio = BytesIO()
-        await photo_file.download_to_memory(bio)
-        bio.seek(0)
-        item = {"type": "photo", "content": bio}
-        user_data[user_id]["items"].append(item)
-    # Құжаттар
-    elif update.message.document:
-        doc = update.message.document
-        if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
-            await update.message.reply_text("Файлдың өлшемі 20 MB-тан аспауы керек.")
-            return
-        filename = doc.file_name.lower()
-        ext = os.path.splitext(filename)[1]
-        file_obj = await doc.get_file()
-        bio = BytesIO()
-        await file_obj.download_to_memory(bio)
-        bio.seek(0)
-        if ext in [".jpg", ".jpeg", ".png", ".gif"]:
-            item = {"type": "photo", "content": bio}
-            user_data[user_id]["items"].append(item)
-        elif ext == ".pdf":
-            # PDF-ті әр бетке бөле отырып, сурет ретінде өңдейміз:
-            images = convert_pdf_item_to_images(bio)
-            if images:
-                for img in images:
-                    item = {"type": "photo", "content": img}
-                    user_data[user_id]["items"].append(item)
-            else:
-                item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
-                user_data[user_id]["items"].append(item)
-        elif ext in [".doc", ".docx"]:
-            converted = convert_office_to_pdf(bio, filename)
-            # Нәтижесінде алынған PDF-ті сурет ретінде өңдейміз:
-            images = convert_pdf_item_to_images(converted)
-            if images:
-                for img in images:
-                    item = {"type": "photo", "content": img}
-                    user_data[user_id]["items"].append(item)
-            else:
-                item = {"type": "text", "content": f"DOCX файл қосылды: {doc.file_name}"}
-                user_data[user_id]["items"].append(item)
-        elif ext in [".ppt", ".pptx"]:
-            converted = convert_office_to_pdf(bio, filename)
-            images = convert_pdf_item_to_images(converted)
-            if images:
-                for img in images:
-                    item = {"type": "photo", "content": img}
-                    user_data[user_id]["items"].append(item)
-            else:
-                item = {"type": "text", "content": f"PPTX файл қосылды: {doc.file_name}"}
-                user_data[user_id]["items"].append(item)
-        else:
-            item = {"type": "text", "content": f"Файл қосылды: {doc.file_name}"}
-            user_data[user_id]["items"].append(item)
-    save_stats("item")
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
+    # Сұрақ: Файлға атау бересіз бе?
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Иә", callback_data="filename_yes"),
+         InlineKeyboardButton("Жоқ", callback_data="filename_no")]
+    ])
+    await update.message.reply_text("Файлға атау бересіз бе?", reply_markup=keyboard)
+    return GET_FILENAME
 
-async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "filename_yes":
+        # Пайдаланушыдан файл атауын сұраймыз:
+        await query.edit_message_text("Файлдың атауын жазыңыз:")
+        return GET_FILENAME
+    elif query.data == "filename_no":
+        # Әдепкі атаумен конвертацияға өтеміз:
+        return await perform_pdf_conversion(update, context, None)
+    else:
+        return GET_FILENAME
+
+async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Пайдаланушы енгізген текст файл атауы ретінде қабылданады.
+    file_name = update.message.text.strip()
+    return await perform_pdf_conversion(update, context, file_name)
+
+async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
@@ -387,7 +354,7 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    # Жүктеу кезінде "⌛" эмодзи хабарламасы көрсетіледі
+    # Жүктеу кезінде "⌛" эмодзи хабарламасы
     loading_msg = await update.effective_chat.send_message("⌛")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -424,10 +391,16 @@ async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    filename = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    if not file_name:
+        file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    else:
+        # Егер пайдаланушы атау енгізсе, оның кеңейтімін .pdf деп орнатамыз:
+        if not file_name.lower().endswith(".pdf"):
+            file_name += ".pdf"
+
     await update.message.reply_document(
         document=merged_pdf,
-        filename=filename,
+        filename=file_name,
         caption=trans["pdf_ready"]
     )
     save_stats("pdf")
@@ -563,19 +536,21 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Пайдаланушы ConversationHandler (PDF жинау)
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_handler)],
         states={
             STATE_ACCUMULATE: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
+            ],
+            GET_FILENAME: [
+                CallbackQueryHandler(filename_decision_handler, pattern="^filename_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
     application.add_handler(conv_handler)
 
-    # Админ ConversationHandler
     admin_conv_handler = ConversationHandler(
         entry_points=[CommandHandler("admin", admin_panel)],
         states={
@@ -593,13 +568,9 @@ if __name__ == "__main__":
     )
     application.add_handler(admin_conv_handler)
 
-    # Тілді өзгерту үшін CallbackQueryHandler
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
-
-    # Егер басқа хабарламалар келсе, оларды жинақтау режиміне бағыттаймыз
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
-    # Сервер режимі: WEBHOOK немесе polling
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
             listen="0.0.0.0",
