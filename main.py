@@ -69,7 +69,12 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- ReportLab қаріптері ---
-pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
+# Алдымен, эмодзилерді қолдайтын шрифтті тіркеуге тырысамыз (Symbola.ttf), егер ол болмаса, NotoSans-ты қолданамыз.
+try:
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
+except Exception as e:
+    logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
 
 # --- Файл атауын өңдеу (sanitize) ---
 def sanitize_filename(name: str) -> str:
@@ -160,9 +165,10 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """Мәтін немесе сурет элементін жеке PDF бетіне айналдырады."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
+    # Эмодзилерді қолдау үшін EmojiFont-ты қолданамыз
+    c.setFont("EmojiFont", 12)
     width, height = A4
     if item["type"] == "text":
-        c.setFont("NotoSans", 12)
         wrapped_text = []
         for line in item["content"].split("\n"):
             wrapped_text.extend(textwrap.wrap(line, width=80))
@@ -172,26 +178,22 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             y_position -= 20
             if y_position < 50:
                 c.showPage()
-                c.setFont("NotoSans", 12)
+                c.setFont("EmojiFont", 12)
                 y_position = height - 50
         c.showPage()
     elif item["type"] == "photo":
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
+            # Сапаны сақтау үшін, егер қажет болса, суретті кішірейту (thumbnail) қолдануға болады:
+            max_size = (A4[0] - 80, A4[1] - 80)
+            img.thumbnail(max_size, Image.ANTIALIAS)
             img_width, img_height = img.size
-            max_width = width - 80
-            max_height = height - 80
-            scale_down = min(max_width / img_width, max_height / img_height)
-            scale = scale_down if scale_down < 1 else max(scale_down, 1.2)
-            new_width = img_width * scale
-            new_height = img_height * scale
-            x = (width - new_width) / 2
-            y = (height - new_height) / 2
-            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
+            x = (A4[0] - img_width) / 2
+            y = (A4[1] - img_height) / 2
+            c.drawImage(ImageReader(img), x, y, width=img_width, height=img_height)
         except Exception as e:
-            c.setFont("NotoSans", 12)
-            c.drawString(40, height/2, f"Error displaying image: {e}")
+            c.drawString(40, A4[1] / 2, f"Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -225,6 +227,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
+    # Пайдаланушы /start кезінде өз тілін сақтаймыз
+    save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
 
@@ -261,7 +265,6 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
-        # Файл атауын сұрамастан, автоматты түрде PDF жасаймыз
         return await convert_pdf_handler(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
@@ -398,11 +401,8 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    if not file_name:
-        file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-    else:
-        if not file_name.lower().endswith(".pdf"):
-            file_name += ".pdf"
+    # Автоматты файл атауын қолданамыз
+    file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
         document=merged_pdf,
