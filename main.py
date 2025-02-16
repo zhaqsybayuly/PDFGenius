@@ -4,7 +4,6 @@ import logging
 import tempfile
 import textwrap
 import asyncio
-import shutil
 import re
 from io import BytesIO
 from typing import Dict, Any, List
@@ -55,7 +54,6 @@ DEFAULT_LANG = "en"
 
 # --- Conversation states ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Inline: Ask if user wants to set a file name
 GET_FILENAME_INPUT = 3      # Wait for user to input file name
 
 # --- Limits ---
@@ -66,11 +64,11 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- Register fonts ---
-# Try to register a font that supports emojis (Symbola), fallback to NotoSans if not found.
+# Try to register a font that supports emojis: use Symbola_hint.ttf from fonts folder.
 try:
-    pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola_hint.ttf'))
 except Exception as e:
-    logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
+    logger.warning("Symbola_hint.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
 
 # --- Sanitize filename ---
@@ -179,8 +177,9 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             item["content"].seek(0)
             img = Image.open(item["content"])
             img_width, img_height = img.size
+            # Есептелген масштабтау: scale - кемінде 1.0
             scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            scale = max(scale, 1.0)  # scale should be at least 1.0 to preserve quality
+            scale = max(scale, 1.0)
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             x = (A4[0] - new_width) / 2
@@ -213,7 +212,7 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User interface ---
+# --- User Interface ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -254,7 +253,10 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
+    # Екі батырма: Convert to PDF және Change file name
     if msg_text == trans["btn_convert_pdf"]:
+        return await convert_pdf_handler(update, context)
+    if msg_text == trans["btn_change_filename"]:
         return await ask_filename(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
@@ -262,9 +264,10 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await trigger_help(update, context)
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
-        keyboard = ReplyKeyboardMarkup([[trans["btn_convert_pdf"]],
-                                         [trans["btn_change_lang"], trans["btn_help"]]],
-                                        resize_keyboard=True)
+        keyboard = ReplyKeyboardMarkup([
+            [trans["btn_convert_pdf"], trans["btn_change_filename"]],
+            [trans["btn_change_lang"], trans["btn_help"]]
+        ], resize_keyboard=True)
         await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
@@ -310,33 +313,14 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# --- File name setting dialog (ReplyKeyboard) ---
+# --- File name setting (ReplyKeyboard) ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Тікелей "Change file name" батырмасын басқан кезде файл атауын енгізуді сұраймыз.
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    keyboard = ReplyKeyboardMarkup(
-        [[trans["filename_yes"], trans["filename_no"]]],
-        one_time_keyboard=True, resize_keyboard=True
-    )
-    await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
-    return GET_FILENAME_DECISION
-
-async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_response = update.message.text.strip().lower()
-    logger.info(f"Filename decision received: {user_response}")
-    user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    if user_response == trans["filename_yes"].lower():
-        await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
-        return GET_FILENAME_INPUT
-    elif user_response == trans["filename_no"].lower():
-        await update.message.reply_text("Conversion started...")
-        return await perform_pdf_conversion(update, context, None)
-    else:
-        await update.message.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
-        return GET_FILENAME_DECISION
+    await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
+    return GET_FILENAME_INPUT
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
@@ -393,8 +377,12 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    # Automatically set the file name
-    file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    # Custom file name is used if provided; otherwise, default name.
+    if not file_name:
+        file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
+    else:
+        if not file_name.lower().endswith(".pdf"):
+            file_name += ".pdf"
 
     await msg.reply_document(
         document=merged_pdf,
@@ -409,6 +397,9 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     )
     return STATE_ACCUMULATE
+
+async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await convert_pdf_handler_with_name(update, context, None)
 
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -502,9 +493,6 @@ if __name__ == "__main__":
         states={
             STATE_ACCUMULATE: [
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
-            ],
-            GET_FILENAME_DECISION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filename_decision_handler)
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
