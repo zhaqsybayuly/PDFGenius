@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Insert your admin ID here
+ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
@@ -52,8 +52,8 @@ LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
 # --- Conversation states ---
-STATE_ACCUMULATE = 1  # Негізгі күй, материалдар жиналады
-GET_FILENAME_INPUT = 3  # Пайдаланушыдан файл атауын алу
+STATE_ACCUMULATE = 1  # Материалдарды жинау және негізгі мәзір
+GET_FILENAME_INPUT = 3  # Файл атауын енгізу
 
 # --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -63,7 +63,7 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- Register fonts ---
-# EmojiFont: Symbola_hint.ttf қолданылады, егер табылмаса fallback – NotoSans.
+# EmojiFont ретінде fonts/Symbola_hint.ttf файлын қолданамыз; егер табылмаса, fallback ретінде NotoSans-ты тіркейміз.
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola_hint.ttf'))
 except Exception as e:
@@ -175,16 +175,15 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
+            # Шамамен 1000x1000 пиксель максималды рұқсатпен суретті кішірейту
+            max_resolution = (1000, 1000)
+            img.thumbnail(max_resolution, Image.LANCZOS)
             img_width, img_height = img.size
-            scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            scale = max(scale, 1.0)  # Әрқашан кемінде 1.0
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
-            x = (A4[0] - new_width) / 2
-            y = (A4[1] - new_height) / 2
-            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
+            x = (A4[0] - img_width) / 2
+            y = (A4[1] - img_height) / 2
+            c.drawImage(ImageReader(img), x, y, width=img_width, height=img_height)
         except Exception as e:
-            c.drawString(40, height/2, f"Error displaying image: {e}")
+            c.drawString(40, height/2, f"😢 Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -210,14 +209,17 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User Interface Functions ---
+# --- User Interface ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
-    await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
+    await update.message.reply_text(
+        f"👋 {trans['welcome']}",
+        reply_markup=language_keyboard()
+    )
 
 def language_keyboard():
     return InlineKeyboardMarkup([
@@ -236,12 +238,16 @@ async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     save_user_lang(user_id, lang_code)
     trans = load_translations(lang_code)
-    await query.edit_message_text(trans["lang_selected"])
+    await query.edit_message_text(f"✅ {trans['lang_selected']}")
     await send_initial_instruction(update, context, lang_code)
 
 async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str):
     trans = load_translations(lang_code)
-    keyboard = ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(
+        [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
+         [trans["btn_change_lang"], trans["btn_help"]]],
+        resize_keyboard=True
+    )
     text = trans["instruction_initial"]
     msg = get_effective_message(update)
     await msg.reply_text(text, reply_markup=keyboard)
@@ -252,10 +258,8 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
-        # Автоматты түрде конвертация: әдепкі файл атауы қолданылады
         return await convert_pdf_handler(update, context)
     if msg_text == trans["btn_change_filename"]:
-        # Файл атауын өзгерту: пайдаланушыдан файл атауын енгізуді сұраймыз
         await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
         return GET_FILENAME_INPUT
     if msg_text == trans["btn_change_lang"]:
@@ -264,10 +268,11 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await trigger_help(update, context)
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
-        keyboard = ReplyKeyboardMarkup([
-            [trans["btn_convert_pdf"], trans["btn_change_filename"]],
-            [trans["btn_change_lang"], trans["btn_help"]]
-        ], resize_keyboard=True)
+        keyboard = ReplyKeyboardMarkup(
+            [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
+             [trans["btn_change_lang"], trans["btn_help"]]],
+            resize_keyboard=True
+        )
         await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
@@ -289,7 +294,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     elif update.message.document:
         doc = update.message.document
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
-            await update.message.reply_text("Файлдың өлшемі 20 MB-тан аспауы керек.")
+            await update.message.reply_text("⚠️ Файлдың өлшемі 20 MB-тан аспауы керек.")
             return
         filename = doc.file_name.lower()
         ext = os.path.splitext(filename)[1]
@@ -307,16 +312,16 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
                     user_data[user_id]["items"].append(item)
                 return
             else:
-                item = {"type": "text", "content": f"File added: {doc.file_name}"}
+                item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
         else:
-            item = {"type": "text", "content": f"File added: {doc.file_name}"}
+            item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
     file_name = sanitize_filename(file_name)
-    logger.info(f"Filename input received: {file_name}")
+    logger.info(f"📄 Файл атауы енгізілді: {file_name}")
     return await perform_pdf_conversion(update, context, file_name)
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
@@ -329,10 +334,10 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     trans = load_translations(lang_code)
     items = user_data.get(user_id, {}).get("items", [])
     if not items:
-        await msg.reply_text(trans["no_items_error"])
+        await msg.reply_text("⚠️ " + trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    loading_msg = await msg.reply_text("⌛")
+    loading_msg = await msg.reply_text("⏳ PDF жасалуда...")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     anim_task = loop.create_task(loading_animation(context, msg.chat.id, loading_msg.message_id, stop_event))
@@ -344,31 +349,30 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
                 pdf_file = generate_item_pdf(item)
                 pdf_list.append(pdf_file)
         except Exception as e:
-            logger.error(f"Error generating PDF for item: {e}")
+            logger.error(f"❌ PDF жасау қатесі: {e}")
     try:
         merged_pdf = await loop.run_in_executor(None, merge_pdfs, pdf_list)
     except Exception as e:
-        logger.error(f"Error merging PDFs: {e}")
+        logger.error(f"❌ PDF біріктіру қатесі: {e}")
         merged_pdf = None
 
     stop_event.set()
     try:
         await context.bot.delete_message(chat_id=msg.chat.id, message_id=loading_msg.message_id)
     except Exception as e:
-        logger.error(f"Error deleting loading message: {e}")
+        logger.error(f"❌ Жүктеу хабарламасын жою қатесі: {e}")
 
     if not merged_pdf:
-        await msg.reply_text("An error occurred during PDF generation. Please try again.")
+        await msg.reply_text("❌ PDF генерациясында қате шықты, қайта көріңіз.")
         return STATE_ACCUMULATE
 
     merged_pdf.seek(0, os.SEEK_END)
     pdf_size = merged_pdf.tell()
     merged_pdf.seek(0)
     if pdf_size > MAX_OUTPUT_PDF_SIZE:
-        await msg.reply_text("The generated PDF file is too large. Please reduce your inputs and try again.")
+        await msg.reply_text("⚠️ Жасалған PDF файлдың өлшемі тым үлкен, материалдарды азайтыңыз.")
         return STATE_ACCUMULATE
 
-    # Use custom file name if provided; otherwise, use default.
     if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     else:
@@ -378,14 +382,18 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     await msg.reply_document(
         document=merged_pdf,
         filename=file_name,
-        caption=trans["pdf_ready"]
+        caption="🎉 " + trans["pdf_ready"]
     )
     save_stats("pdf")
     user_data[user_id]["items"] = []
     user_data[user_id]["instruction_sent"] = False
     await msg.reply_text(
         trans["instruction_initial"],
-        reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
+        reply_markup=ReplyKeyboardMarkup(
+            [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
+             [trans["btn_change_lang"], trans["btn_help"]]],
+            resize_keyboard=True
+        )
     )
     return STATE_ACCUMULATE
 
@@ -406,12 +414,15 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(trans["help_text"])
     return STATE_ACCUMULATE
 
-# --- Admin Panel ---
+# --- Admin Panel (Kazakh) ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    # Admin панелі әрқашан қазақ тілінде болады
     if str(user_id) != ADMIN_ID:
-        await update.message.reply_text("You are not an admin.")
+        await update.message.reply_text("Сіз админ емессіз.")
         return
+    # Force Kazakh for admin panel
+    trans = load_translations("kz")
     await show_admin_stats(update, context)
 
 async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -427,16 +438,16 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = {}
     total_users = len(users)
     stat_text = (
-        f"📊 Statistics:\n"
-        f"• Total actions: {stats.get('total', 0)}\n"
-        f"• Items collected: {stats.get('items', 0)}\n"
-        f"• PDFs generated: {stats.get('pdf_count', 0)}\n"
-        f"• Users: {total_users}\n"
+        f"📊 Статистика:\n"
+        f"• Жалпы әрекет саны: {stats.get('total', 0)}\n"
+        f"• Жинақталған элементтер: {stats.get('items', 0)}\n"
+        f"• PDF файлдар саны: {stats.get('pdf_count', 0)}\n"
+        f"• Пайдаланушылар саны: {total_users}\n"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Send Message", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔀 Forward Message", callback_data="admin_forward")],
-        [InlineKeyboardButton("❌ Close", callback_data="admin_cancel")]
+        [InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🔀 Форвард хабарлама", callback_data="admin_forward")],
+        [InlineKeyboardButton("❌ Жабу", callback_data="admin_cancel")]
     ])
     await update.message.reply_text(stat_text, reply_markup=keyboard)
 
@@ -446,11 +457,11 @@ async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_
     sent = 0
     for uid in user_ids:
         try:
-            await context.bot.send_message(chat_id=uid, text=f"[Admin Message]\n\n{admin_msg}")
+            await context.bot.send_message(chat_id=uid, text=f"[Админ хабарламасы]\n\n{admin_msg}")
             sent += 1
         except Exception as e:
-            logger.error(f"Error sending broadcast to {uid}: {e}")
-    await update.message.reply_text(f"Message sent to {sent} users.")
+            logger.error(f"Хабарлама жіберу қатесі {uid}: {e}")
+    await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
 
 async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_msg: Message = update.message
@@ -461,21 +472,21 @@ async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.copy_message(chat_id=uid, from_chat_id=admin_msg.chat.id, message_id=admin_msg.message_id)
             forwarded += 1
         except Exception as e:
-            logger.error(f"Error forwarding message to {uid}: {e}")
-    await update.message.reply_text(f"Message forwarded to {forwarded} users.")
+            logger.error(f"Форвард қатесі {uid}: {e}")
+    await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
 
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Admin panel closed.")
+    await update.message.reply_text("Админ панелі жабылды.")
 
 # --- Fallback ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_data:
         del user_data[user_id]
-    await update.message.reply_text("Operation canceled. Please use /start to restart.")
+    await update.message.reply_text("Операция тоқтатылды. /start арқылы қайта бастаңыз.")
     return STATE_ACCUMULATE
 
-# --- Main function ---
+# --- Main ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
