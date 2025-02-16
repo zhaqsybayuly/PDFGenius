@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Админ ID-іңізді енгізіңіз
+ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
@@ -52,18 +52,18 @@ LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
 # --- Conversation states ---
-STATE_ACCUMULATE = 1  # Негізгі күй, материалдар жиналады
-GET_FILENAME_INPUT = 3  # Пайдаланушыдан файл атауын енгізу
+STATE_ACCUMULATE = 1   # Негізгі күй – материалдар жиналады, мәзір көрсетіледі.
+GET_FILENAME_INPUT = 3  # Пайдаланушыдан файл атауын енгізу.
 
 # --- Limits ---
-MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
-MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
+MAX_USER_FILE_SIZE = 20 * 1024 * 1024   # 20 MB
+MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024    # 50 MB
 
 # --- Global data ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- Register fonts ---
-# Файл: fonts/Symbola.ttf болуы тиіс.
+# Файл fonts/Symbola.ttf-ны қолданамыз (оны fonts қалтасында орналастырыңыз)
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
 except Exception as e:
@@ -175,19 +175,22 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            img_width, img_height = img.size
-            # Есептелген масштабтау: егер сурет үлкен болса, оны A4 бетіне толық сыйғызамыз; егер кіші болса, оригинал өлшемі қолданылады.
-            margin = 40
-            available_width = A4[0] - margin
-            available_height = A4[1] - margin
-            scale = min(1.0, min(available_width / img_width, available_height / img_height))
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
-            x = (A4[0] - new_width) / 2
-            y = (A4[1] - new_height) / 2
-            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            # Қалпына келтіру: суретті максималды 1000x1000 пиксель етіп кішірейтеміз
+            max_resolution = (1000, 1000)
+            img.thumbnail(max_resolution, Image.LANCZOS)
+            # Сығу: суретті JPEG форматында 80 сапамен сақтаймыз
+            compressed = BytesIO()
+            img.save(compressed, format="JPEG", quality=80, optimize=True)
+            compressed.seek(0)
+            comp_img = Image.open(compressed)
+            img_width, img_height = comp_img.size
+            x = (A4[0] - img_width) / 2
+            y = (A4[1] - img_height) / 2
+            c.drawImage(ImageReader(comp_img), x, y, width=img_width, height=img_height)
         except Exception as e:
-            c.drawString(40, height / 2, f"😢 {e}")
+            c.drawString(40, height/2, f"😢 {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -321,13 +324,15 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
-    # Егер пайдаланушы "↩️ Артқа" деп жазса, негізгі мәзірге қайтамыз
     if file_name.lower() == "↩️ артқа":
-        await update.message.reply_text("Артқа қайтылды. Әдепкі атау қолданылады.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("↩️ Артқа қайтылды. Әдепкі атау қолданылады.", reply_markup=ReplyKeyboardRemove())
         return await perform_pdf_conversion(update, context, None)
     file_name = sanitize_filename(file_name)
-    logger.info(f"📄 Файл атауы енгізілді: {file_name}")
-    return await perform_pdf_conversion(update, context, file_name)
+    # Пайдаланушы енгізген атаудан тек негізін алып, соңына ".pdf" қосамыз.
+    base = os.path.splitext(file_name)[0]
+    final_name = base + ".pdf"
+    logger.info(f"📄 Файл атауы енгізілді: {final_name}")
+    return await perform_pdf_conversion(update, context, final_name)
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     return await convert_pdf_handler_with_name(update, context, file_name)
@@ -378,6 +383,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("⚠️ Жасалған PDF файлдың өлшемі тым үлкен, материалдарды азайтыңыз.")
         return STATE_ACCUMULATE
 
+    # Егер пайдаланушы файл атауын енгізсе, оны қолданамыз, әйтпесе автоматты атау.
     if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     else:
@@ -387,7 +393,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     await msg.reply_document(
         document=merged_pdf,
         filename=file_name,
-        caption="🎉 " + trans["pdf_ready"]
+        caption=f"🎉 {trans['pdf_ready']}"
     )
     save_stats("pdf")
     user_data[user_id]["items"] = []
@@ -425,7 +431,6 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(user_id) != ADMIN_ID:
         await update.message.reply_text("Сіз админ емессіз.")
         return
-    # Force Kazakh for admin panel
     trans = load_translations("kz")
     await show_admin_stats(update, context)
 
@@ -509,12 +514,11 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
 
     application.add_handler(CommandHandler("admin", admin_panel))
-    # Admin inline buttons handler for broadcast/forward/cancel:
+    # Admin inline buttons:
+    application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(CallbackQueryHandler(admin_broadcast_handler, pattern="^admin_broadcast"))
     application.add_handler(CallbackQueryHandler(admin_forward_handler, pattern="^admin_forward"))
     application.add_handler(CallbackQueryHandler(admin_cancel, pattern="^admin_cancel"))
-
-    application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
