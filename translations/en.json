@@ -1,16 +1,15 @@
 {
-  "welcome": "👋 Welcome to PDF Genius bot! Please select a language:",
-  "lang_selected": "✅ Language successfully selected!",
+  "welcome": "Welcome to PDF Genius bot! 😊",
+  "lang_selected": "Language selected successfully! ✅",
   "choose_language": "Please select a language:",
-  "instruction_initial": "Send a file, photo, or text and I will combine them into one PDF file for you.",
-  "instruction_accumulated": "Your materials are ready for PDF conversion. Send more items or choose an option below.",
-  "btn_change_lang": "Change language",
-  "btn_help": "Help",
+  "instruction_initial": "Send a file, photo, or text and I will combine them into one PDF for you.",
+  "instruction_accumulated": "Your materials are ready for PDF conversion. Choose an option below.",
   "btn_convert_pdf": "Convert to PDF",
   "btn_change_filename": "Change file name",
-  "pdf_ready": "🎉 Your PDF is ready!",
-  "help_text": "To use this bot, simply send any file, photo, or text. Use the buttons below for language change or help.",
-  "no_items_error": "No items received. Please send a file, photo, or text.",
-  "enter_filename": "Please enter the desired file name:",
-  "choose_language": "Please select a language:"
+  "btn_change_lang": "Change language",
+  "btn_help": "Help",
+  "pdf_ready": "Your PDF is ready! 🎉",
+  "help_text": "Simply send any file, photo, or text. Use the buttons below for options.",
+  "no_items_error": "No items received. Please send something to convert.",
+  "enter_filename": "Please enter the desired file name:"
 }
