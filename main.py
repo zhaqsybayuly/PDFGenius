@@ -142,7 +142,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# --- Office файлдарын өңдеуді алып тастаймыз ---
+# Office файлдарын өңдеуді алып тастаймыз
 
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады."""
@@ -218,6 +218,11 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
+# --- Helper: effective message ---
+def get_effective_message(update: Update) -> Message:
+    """update.message жоқ болса, update.callback_query.message пайдаланылады."""
+    return update.message if update.message is not None else update.callback_query.message
+
 # --- Пайдаланушы интерфейсі ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -250,8 +255,8 @@ async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT
     trans = load_translations(lang_code)
     keyboard = ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     text = trans["instruction_initial"]
-    target = update.effective_message if update.effective_message else update.message
-    await target.reply_text(text, reply_markup=keyboard)
+    msg = get_effective_message(update)
+    await msg.reply_text(text, reply_markup=keyboard)
 
 async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -333,14 +338,12 @@ async def filename_decision_callback(update: Update, context: ContextTypes.DEFAU
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        await query.message.reply_text(trans["enter_filename"])  # query.message пайдалану
+        await query.edit_message_text(trans["enter_filename"])
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
-        await query.edit_message_text(trans["processing"])
-        # update орнына query.message арқылы контекст алу
         return await perform_pdf_conversion(update, context, None)
     else:
-        await query.edit_message_text("Please choose...")
+        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -352,19 +355,19 @@ async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_T
     return await convert_pdf_handler_with_name(update, context, file_name)
 
 async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
-    # Барлық update.message -> update.effective_message
+    msg = get_effective_message(update)
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     items = user_data.get(user_id, {}).get("items", [])
     if not items:
-        await update.effective_message.reply_text(trans["no_items_error"])  # effective_message
+        await msg.reply_text(trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    loading_msg = await update.effective_chat.send_message("⌛")
+    loading_msg = await msg.reply_text("⌛")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
-    anim_task = loop.create_task(loading_animation(context, update.effective_chat.id, loading_msg.message_id, stop_event))
+    anim_task = loop.create_task(loading_animation(context, msg.chat.id, loading_msg.message_id, stop_event))
 
     pdf_list = []
     for item in items:
@@ -382,19 +385,19 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
 
     stop_event.set()
     try:
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=loading_msg.message_id)
+        await context.bot.delete_message(chat_id=msg.chat.id, message_id=loading_msg.message_id)
     except Exception as e:
         logger.error(f"Error deleting loading message: {e}")
 
     if not merged_pdf:
-        await update.message.reply_text("PDF генерациясында қате шықты, қайта көріңіз.")
+        await msg.reply_text("PDF генерациясында қате шықты, қайта көріңіз.")
         return STATE_ACCUMULATE
 
     merged_pdf.seek(0, os.SEEK_END)
     pdf_size = merged_pdf.tell()
     merged_pdf.seek(0)
     if pdf_size > MAX_OUTPUT_PDF_SIZE:
-        await update.message.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
+        await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
     if not file_name:
@@ -403,7 +406,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         if not file_name.lower().endswith(".pdf"):
             file_name += ".pdf"
 
-   await update.effective_message.reply_document(  # effective_message
+    await msg.reply_document(
         document=merged_pdf,
         filename=file_name,
         caption=trans["pdf_ready"]
@@ -411,7 +414,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     save_stats("pdf")
     user_data[user_id]["items"] = []
     user_data[user_id]["instruction_sent"] = False
-    await update.message.reply_text(
+    await msg.reply_text(
         trans["instruction_initial"],
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     )
