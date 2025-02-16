@@ -11,5 +11,5 @@
   "pdf_ready": "Your PDF is ready! 🎉",
   "help_text": "Simply send any file, photo, or text. Use the buttons below for options.",
   "no_items_error": "No items received. Please send something to convert.",
-  "enter_filename": "Please enter the desired file name:"
+  "enter_filename": "Please enter the desired file name (or type '↩️ Back' to cancel):"
 }
