@@ -55,9 +55,9 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Inline: Yes/No таңдауды сұрау
+GET_FILENAME_DECISION = 2   # Inline: "Yes"/"No" таңдауды сұрау
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
-# Admin панелі үшін conversation қолданбаймыз
+# Admin үшін conversation қолданбаймыз
 
 # --- Шектеулер ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -67,7 +67,7 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- ReportLab қаріптері ---
-# Эмодзилерді қолдау үшін Symbola.ttf пайдалануға тырысамыз
+# Эмодзилерді қолдайтын Symbola.ttf пайдалануға тырысамыз, ол табылмаса fallback ретінде NotoSans
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
 except Exception as e:
@@ -76,7 +76,7 @@ except Exception as e:
 
 # --- Файл атауын өңдеу (sanitize) ---
 def sanitize_filename(name: str) -> str:
-    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
+    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және рұқсат етілмеген символдарды жояды."""
     name = name.strip().lower().replace(" ", "_")
     name = re.sub(r'[^a-z0-9_\-\.]', '', name)
     if len(name) > 50:
@@ -163,7 +163,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """Мәтін немесе сурет элементін жеке PDF бетіне айналдырады."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    # EmojiFont-ты қолданамыз (Symbola немесе NotoSans fallback)
+    # Эмодзилерді көрсету үшін EmojiFont қолданамыз
     c.setFont("EmojiFont", 12)
     width, height = A4
     if item["type"] == "text":
@@ -183,15 +183,17 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            # Суретті кішірейту (thumbnail) қолданамыз
-            max_size = (int(A4[0] - 80), int(A4[1] - 80))
-            img.thumbnail(max_size, Image.LANCZOS)
+            # Егер сурет үлкен болса, оны A4 бетіне сай масштабтаймыз, бірақ сапасын жоғары ұстаймыз:
             img_width, img_height = img.size
-            x = (A4[0] - img_width) / 2
-            y = (A4[1] - img_height) / 2
-            c.drawImage(ImageReader(img), x, y, width=img_width, height=img_height)
+            scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height, 1.0)
+            new_width = int(img_width * scale)
+            new_height = int(img_height * scale)
+            # Егер масштабтау коэффициенті 1.0 болса, сурет өзгеріссіз қалады.
+            x = (A4[0] - new_width) / 2
+            y = (A4[1] - new_height) / 2
+            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
         except Exception as e:
-            c.drawString(40, A4[1] / 2, f"Error displaying image: {e}")
+            c.drawString(40, height / 2, f"Error displaying image: {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -216,7 +218,6 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
-# --- Helper: effective message ---
 def get_effective_message(update: Update) -> Message:
     """update.message болмаса, update.callback_query.message пайдаланылады."""
     return update.message if update.message is not None else update.callback_query.message
@@ -263,8 +264,8 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
-        # Файл атауын сұрамастан, автоматты түрде PDF жасаймыз
-        return await convert_pdf_handler(update, context)
+        # Файл атауын сұрау inline батырмалар арқылы орындалады
+        return await ask_filename(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
     if msg_text == trans["btn_help"]:
@@ -400,6 +401,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
+    # Автоматты файл атауын қолданамыз
     file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
@@ -439,7 +441,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if str(user_id) != ADMIN_ID:
         await update.message.reply_text("Сіз админ емессіз.")
         return
-    # Admin командасы әр шақырылған сайын статистиканы шығарады
+    # /admin бұйрығы статистика мен басқа функцияларды көрсетеді
     await show_admin_stats(update, context)
 
 async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,7 +455,7 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users = json.load(f)
     except Exception:
         users = {}
-    total_users = len(users)  # Егер /start командасы пайдаланушыны сақтаса, бұл мән жаңартылады
+    total_users = len(users)  # /start кезінде сақталған пайдаланушылар
     stat_text = (
         f"📊 Статистика:\n"
         f"• Жалпы әрекет саны: {stats.get('total', 0)}\n"
@@ -462,6 +464,45 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Пайдаланушылар саны: {total_users}\n"
     )
     await update.message.reply_text(stat_text)
+    # Админ панелін ашу үшін инлайн батырмалар қосуға болады:
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🔀 Форвард хабарлама", callback_data="admin_forward")],
+        [InlineKeyboardButton("❌ Жабу", callback_data="admin_cancel")]
+    ])
+    await update.message.reply_text("Админ панелі:", reply_markup=keyboard)
+    return
+
+async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_msg = update.message.text
+    user_ids = get_all_users()
+    sent = 0
+    for uid in user_ids:
+        try:
+            await context.bot.send_message(chat_id=uid, text=f"[Админ хабарламасы]\n\n{admin_msg}")
+            sent += 1
+        except Exception as e:
+            logger.error(f"Error sending broadcast to {uid}: {e}")
+    await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
+    return
+
+async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin_msg: Message = update.message
+    user_ids = get_all_users()
+    forwarded = 0
+    for uid in user_ids:
+        try:
+            # ФОРВАРД кезінде inline батырмалар да көшірілуі үшін, біз post-ты қайта жібереміз
+            await context.bot.copy_message(chat_id=uid, from_chat_id=admin_msg.chat.id, message_id=admin_msg.message_id)
+            forwarded += 1
+        except Exception as e:
+            logger.error(f"Error forwarding message to {uid}: {e}")
+    await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
+    return
+
+async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Админ панелі жабылды.")
+    return
 
 # --- Фоллбэк ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
