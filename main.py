@@ -36,53 +36,52 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 from PyPDF2 import PdfMerger
 
-# --- Лог конфигурациясы ---
+# --- Logging configuration ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Конфигурация ---
+# --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
+ADMIN_ID = "5316060523"  # Insert your admin ID
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
-# --- Тілдер ---
+# --- Languages ---
 LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
-# --- Conversation күйлері ---
+# --- Conversation states ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Inline: "Yes"/"No" таңдауды сұрау
-GET_FILENAME_INPUT = 3      # Файл атауын енгізу
+GET_FILENAME_DECISION = 2   # Inline: Ask "Would you like to set a file name?"
+GET_FILENAME_INPUT = 3      # Wait for user to input file name
 
-# --- Шектеулер ---
+# --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 
-# --- Глобалды деректер ---
+# --- Global data ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# --- ReportLab қаріптері ---
-# Эмодзилерді көрсету үшін Symbola.ttf-ны тіркеуге тырысамыз, ол жоқ болса fallback ретінде NotoSans қолданылады
+# --- Register fonts ---
+# Try to register a font that supports emojis (Symbola), fallback to NotoSans if not found.
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
 except Exception as e:
     logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын өңдеу (sanitize) ---
+# --- Sanitize filename ---
 def sanitize_filename(name: str) -> str:
-    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
     name = name.strip().lower().replace(" ", "_")
     name = re.sub(r'[^a-z0-9_\-\.]', '', name)
     if len(name) > 50:
         name = name[:50]
     return name
 
-# --- Аударма және көмекші функциялар ---
+# --- Translation and helper functions ---
 def load_translations(lang_code: str) -> Dict[str, str]:
     try:
         with open(f"translations/{lang_code}.json", "r", encoding="utf-8") as f:
@@ -143,9 +142,8 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# --- PDF өңдеу функциялары ---
+# --- PDF processing functions ---
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
-    """PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады."""
     images = []
     try:
         doc = fitz.open(stream=bio.getvalue(), filetype="pdf")
@@ -159,10 +157,8 @@ def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     return images
 
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
-    """Мәтін немесе сурет элементін жеке PDF бетіне айналдырады."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    # EmojiFont-ты қолданамыз
     c.setFont("EmojiFont", 12)
     width, height = A4
     if item["type"] == "text":
@@ -182,10 +178,10 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            # Есептелген масштабтау: сурет A4 өлшеміне сай келетіндей өңделеді, бірақ сапасы сақталады
             img_width, img_height = img.size
+            # Есептелген масштабтау: егер сурет кішкентай болса, оны сапасын жоғалтпай үлкейтуге мүмкіндік береміз
             scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            scale = max(scale, 1.0)  # Сапаны жоғарылату үшін scale кемінде 1.0
+            scale = max(scale, 1.0)  # scale кемінде 1.0
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             x = (A4[0] - new_width) / 2
@@ -199,7 +195,6 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     return buffer
 
 def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
-    """PDF файлдарын біріктіріп, біртұтас PDF-ке айналдырады."""
     merger = PdfMerger()
     for pdf_io in pdf_list:
         try:
@@ -213,20 +208,18 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     return output_buffer
 
 async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
-    """PDF генерациясы кезінде хабарламада тек "⌛" эмодзи тұрақты көрсетіледі."""
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
 def get_effective_message(update: Update) -> Message:
-    """update.message болмаса, update.callback_query.message пайдаланылады."""
     return update.message if update.message is not None else update.callback_query.message
 
-# --- Пайдаланушы интерфейсі ---
+# --- User interface ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    save_user_lang(user_id, lang_code)  # /start кезінде тілді сақтаймыз
+    save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
 
@@ -323,7 +316,6 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Мысалы: "Would you like to set a file name?"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
          InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
@@ -334,14 +326,18 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    logger.info(f"Filename decision callback: {query.data}")
+    logger.info(f"Filename decision callback data: {query.data}")
     user_id = query.from_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        await query.edit_message_text(trans["enter_filename"])
+        # Жаңа хабарлама ретінде файл атауын енгізуді сұраймыз
+        chat_id = query.message.chat.id
+        await context.bot.send_message(chat_id=chat_id, text=trans["enter_filename"])
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
+        # Егер "No" таңдалса, конвертацияны бастаймыз
+        await context.bot.send_message(chat_id=query.message.chat.id, text="Conversion started...")
         return await perform_pdf_conversion(update, context, None)
     else:
         await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
@@ -435,7 +431,7 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(trans["help_text"])
     return STATE_ACCUMULATE
 
-# --- Админ панелі ---
+# --- Admin panel ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
@@ -496,7 +492,7 @@ async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Админ панелі жабылды.")
 
-# --- Фоллбэк ---
+# --- Fallback ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in user_data:
@@ -504,7 +500,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Операция тоқтатылды. /start арқылы қайта бастаңыз.")
     return STATE_ACCUMULATE
 
-# --- Негізгі функция ---
+# --- Main function ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -526,7 +522,6 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
 
     application.add_handler(CommandHandler("admin", admin_panel))
-
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
