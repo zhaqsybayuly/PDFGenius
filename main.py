@@ -55,11 +55,9 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # "Yes"/"No" таңдауды сұрау (inline)
+GET_FILENAME_DECISION = 2   # Inline: Yes/No таңдауды сұрау
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
-ADMIN_MENU = 10
-ADMIN_BROADCAST = 11
-ADMIN_FORWARD = 12
+# Admin панелі үшін conversation қолданбаймыз
 
 # --- Шектеулер ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -69,7 +67,7 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- ReportLab қаріптері ---
-# Алдымен, эмодзилерді қолдайтын шрифтті тіркеуге тырысамыз (Symbola.ttf), егер ол болмаса, NotoSans-ты қолданамыз.
+# Эмодзилерді қолдау үшін Symbola.ttf пайдалануға тырысамыз
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
 except Exception as e:
@@ -165,7 +163,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     """Мәтін немесе сурет элементін жеке PDF бетіне айналдырады."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    # Эмодзилерді қолдау үшін EmojiFont-ты қолданамыз
+    # EmojiFont-ты қолданамыз (Symbola немесе NotoSans fallback)
     c.setFont("EmojiFont", 12)
     width, height = A4
     if item["type"] == "text":
@@ -185,9 +183,9 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            # Сапаны сақтау үшін, егер қажет болса, суретті кішірейту (thumbnail) қолдануға болады:
-            max_size = (A4[0] - 80, A4[1] - 80)
-            img.thumbnail(max_size, Image.ANTIALIAS)
+            # Суретті кішірейту (thumbnail) қолданамыз
+            max_size = (int(A4[0] - 80), int(A4[1] - 80))
+            img.thumbnail(max_size, Image.LANCZOS)
             img_width, img_height = img.size
             x = (A4[0] - img_width) / 2
             y = (A4[1] - img_height) / 2
@@ -218,6 +216,7 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
+# --- Helper: effective message ---
 def get_effective_message(update: Update) -> Message:
     """update.message болмаса, update.callback_query.message пайдаланылады."""
     return update.message if update.message is not None else update.callback_query.message
@@ -227,8 +226,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Пайдаланушы /start кезінде өз тілін сақтаймыз
-    save_user_lang(user_id, lang_code)
+    save_user_lang(user_id, lang_code)  # /start кезінде тілді сақтаймыз
     user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
 
@@ -265,6 +263,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
+        # Файл атауын сұрамастан, автоматты түрде PDF жасаймыз
         return await convert_pdf_handler(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
@@ -401,7 +400,6 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    # Автоматты файл атауын қолданамыз
     file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
@@ -439,65 +437,10 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
+        await update.message.reply_text("Сіз админ емессіз.")
         return
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔀 Форвард хабарлама", callback_data="admin_forward")],
-        [InlineKeyboardButton("📊 Толық статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton("❌ Жабу", callback_data="admin_cancel")]
-    ])
-    await update.message.reply_text("Админ панелі:", reply_markup=keyboard)
-    return ADMIN_MENU
-
-async def admin_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    data = query.data
-    if data == "admin_broadcast":
-        await query.edit_message_text("Жібергіңіз келетін хабарламаны енгізіңіз (барлық пайдаланушыларға жіберіледі):")
-        return ADMIN_BROADCAST
-    elif data == "admin_forward":
-        await query.edit_message_text("Форвардтайтын хабарламаны таңдаңыз (оны барлығына бағыттаймыз):")
-        return ADMIN_FORWARD
-    elif data == "admin_stats":
-        await show_admin_stats(update, context)
-        return ADMIN_MENU
-    elif data == "admin_cancel":
-        await query.edit_message_text("Админ панелі жабылды.")
-        return ConversationHandler.END
-    else:
-        return ADMIN_MENU
-
-async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_msg = update.message.text
-    user_ids = get_all_users()
-    sent = 0
-    for uid in user_ids:
-        try:
-            await context.bot.send_message(chat_id=uid, text=f"[Админ хабарламасы]\n\n{admin_msg}")
-            sent += 1
-        except Exception as e:
-            logger.error(f"Error sending broadcast to {uid}: {e}")
-    await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
-    return ADMIN_MENU
-
-async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_msg: Message = update.message
-    user_ids = get_all_users()
-    forwarded = 0
-    for uid in user_ids:
-        try:
-            await admin_msg.forward(chat_id=uid)
-            forwarded += 1
-        except Exception as e:
-            logger.error(f"Error forwarding message to {uid}: {e}")
-    await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
-    return ADMIN_MENU
+    # Admin командасы әр шақырылған сайын статистиканы шығарады
+    await show_admin_stats(update, context)
 
 async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -510,25 +453,15 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users = json.load(f)
     except Exception:
         users = {}
-    total_users = len(users)
-    language_counts = {}
-    for lang in users.values():
-        language_counts[lang] = language_counts.get(lang, 0) + 1
+    total_users = len(users)  # Егер /start командасы пайдаланушыны сақтаса, бұл мән жаңартылады
     stat_text = (
-        f"📊 Толық статистика:\n"
+        f"📊 Статистика:\n"
         f"• Жалпы әрекет саны: {stats.get('total', 0)}\n"
         f"• Жинақталған элементтер: {stats.get('items', 0)}\n"
         f"• PDF файлдар саны: {stats.get('pdf_count', 0)}\n"
         f"• Пайдаланушылар саны: {total_users}\n"
     )
-    for lang, count in language_counts.items():
-        stat_text += f"   - {lang.upper()}: {count}\n"
-    await update.effective_chat.send_message(stat_text)
-    return ADMIN_MENU
-
-async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Админ панелі жабылды.")
-    return ConversationHandler.END
+    await update.message.reply_text(stat_text)
 
 # --- Фоллбэк ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -536,7 +469,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in user_data:
         del user_data[user_id]
     await update.message.reply_text("Операция тоқтатылды. /start арқылы қайта бастаңыз.")
-    return ConversationHandler.END
+    return STATE_ACCUMULATE
 
 # --- Негізгі функция ---
 if __name__ == "__main__":
@@ -559,22 +492,7 @@ if __name__ == "__main__":
     )
     application.add_handler(conv_handler)
 
-    admin_conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("admin", admin_panel)],
-        states={
-            ADMIN_MENU: [
-                CallbackQueryHandler(admin_menu_handler, pattern="^admin_")
-            ],
-            ADMIN_BROADCAST: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_handler)
-            ],
-            ADMIN_FORWARD: [
-                MessageHandler(filters.ALL & ~filters.COMMAND, admin_forward_handler)
-            ]
-        },
-        fallbacks=[CommandHandler("cancel", admin_cancel)]
-    )
-    application.add_handler(admin_conv_handler)
+    application.add_handler(CommandHandler("admin", admin_panel))
 
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
