@@ -336,16 +336,21 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    logger.info(f"Filename decision callback triggered with data: {query.data}")
     user_id = query.from_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        await query.edit_message_text(trans["enter_filename"])
+        # Жаңа хабарлама жіберіп, пайдаланушыдан файл атауын енгізуді сұраймыз.
+        effective_msg = get_effective_message(update)
+        await effective_msg.reply_text(trans["enter_filename"])
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
+        # Егер "No" таңдалса, автоматты түрде әдепкі атаумен PDF жасау функциясын шақырамыз.
         return await perform_pdf_conversion(update, context, None)
     else:
-        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
+        effective_msg = get_effective_message(update)
+        await effective_msg.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
