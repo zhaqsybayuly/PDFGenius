@@ -56,7 +56,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешімді сұрау
+GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешімді сұрау (inline)
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
@@ -72,7 +72,7 @@ user_data: Dict[int, Dict[str, Any]] = {}
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын өңдеу ---
+# --- Файл атауын өңдеу (sanitize) ---
 def sanitize_filename(name: str) -> str:
     """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
     name = name.strip().lower().replace(" ", "_")
@@ -314,31 +314,32 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# --- Файл атауын сұрау диалогы ---
+# --- Файл атауын сұрау диалогы (inline) ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    keyboard = ReplyKeyboardMarkup(
-        [[trans["filename_yes"], trans["filename_no"]]],
-        one_time_keyboard=True, resize_keyboard=True
-    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
+         InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
+    ])
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME_DECISION
 
-async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_response = update.message.text.strip()
-    logger.info(f"Filename decision received: {user_response}")
-    user_id = update.effective_user.id
+async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    if user_response.lower() == trans["filename_yes"].lower():
-        await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
+    if query.data == "filename_yes":
+        await query.edit_message_text(trans["enter_filename"])
         return GET_FILENAME_INPUT
-    elif user_response.lower() == trans["filename_no"].lower():
-        return await perform_pdf_conversion(update, context, None)
+    elif query.data == "filename_no":
+        # Егер "No" таңдалса, автоматты түрде әдепкі атау қолданылады
+        return await perform_pdf_conversion(query, context, None)
     else:
-        await update.message.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
+        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -545,7 +546,7 @@ if __name__ == "__main__":
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
             GET_FILENAME_DECISION: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, filename_decision_handler)
+                CallbackQueryHandler(filename_decision_callback, pattern="^filename_")
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
