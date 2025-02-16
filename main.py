@@ -56,7 +56,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешімді сұрау
+GET_FILENAME_DECISION = 2   # "Yes"/"No" таңдауды сұрау
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
@@ -72,9 +72,9 @@ user_data: Dict[int, Dict[str, Any]] = {}
 # --- ReportLab қаріптері ---
 pdfmetrics.registerFont(TTFont('NotoSans', 'fonts/NotoSans.ttf'))
 
-# --- Файл атауын өңдеу ---
+# --- Файл атауын өңдеу (sanitize) ---
 def sanitize_filename(name: str) -> str:
-    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және тек рұқсат етілген символдарды қалдырады."""
+    """Атауды төменгі регистрге айналдырып, бос орындарды асты сызғышқа ауыстырады және рұқсат етілмеген символдарды жояды."""
     name = name.strip().lower().replace(" ", "_")
     name = re.sub(r'[^a-z0-9_\-\.]', '', name)
     if len(name) > 50:
@@ -91,6 +91,8 @@ def load_translations(lang_code: str) -> Dict[str, str]:
             return json.load(f)
 
 def get_user_lang(user_id: int) -> str:
+    if not os.path.exists(USERS_FILE):
+        return DEFAULT_LANG
     try:
         with open(USERS_FILE, "r") as f:
             users = json.load(f)
@@ -101,8 +103,11 @@ def get_user_lang(user_id: int) -> str:
 
 def save_user_lang(user_id: int, lang_code: str):
     try:
-        with open(USERS_FILE, "r") as f:
-            users = json.load(f)
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, "r") as f:
+                users = json.load(f)
+        else:
+            users = {}
     except Exception:
         users = {}
     users[str(user_id)] = lang_code
@@ -112,8 +117,9 @@ def save_user_lang(user_id: int, lang_code: str):
 def save_stats(action: str):
     stats = {"total": 0, "items": 0, "pdf_count": 0}
     try:
-        with open(STATS_FILE, "r") as f:
-            stats = json.load(f)
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, "r") as f:
+                stats = json.load(f)
     except Exception:
         pass
     stats["total"] += 1
@@ -126,19 +132,20 @@ def save_stats(action: str):
 
 def get_all_users() -> List[int]:
     try:
-        with open(USERS_FILE, "r") as f:
-            users = json.load(f)
-        return [int(uid) for uid in users.keys()]
+        if os.path.exists(USERS_FILE):
+            with open(USERS_FILE, "r") as f:
+                users = json.load(f)
+            return [int(uid) for uid in users.keys()]
+        else:
+            return []
     except Exception as e:
         logger.error(f"Error loading users: {e}")
         return []
 
-# Office файлдарын өңдеуді алып тастаймыз.
+# Office файлдарын өңдеуді алып тастаймыз
 
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
-    """
-    PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады.
-    """
+    """PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады."""
     images = []
     try:
         doc = fitz.open(stream=bio.getvalue(), filetype="pdf")
@@ -152,10 +159,7 @@ def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     return images
 
 def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
-    """
-    Мәтін немесе сурет элементін жеке PDF бетіне айналдырады.
-    Суреттер үйлесімді түрде масштабталады: үлкен суреттер кішірейтіледі, ал кіші суреттер 80%-ға үлкейтіледі.
-    """
+    """Мәтін немесе сурет элементін жеке PDF бетіне айналдырады."""
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -196,9 +200,7 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
     return buffer
 
 def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
-    """
-    PDF файлдарын біріктіріп, біртұтас PDF-ке айналдырады.
-    """
+    """PDF файлдарын біріктіріп, біртұтас PDF-ке айналдырады."""
     merger = PdfMerger()
     for pdf_io in pdf_list:
         try:
@@ -212,9 +214,7 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     return output_buffer
 
 async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
-    """
-    PDF генерациясы кезінде хабарламада тек "⌛" эмодзи көрсетіліп, ол тұрақты қалады.
-    """
+    """PDF генерациясы кезінде хабарламада тек "⌛" эмодзи тұрақты көрсетіледі."""
     while not stop_event.is_set():
         await asyncio.sleep(1)
 
@@ -224,10 +224,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
-    await update.message.reply_text(
-        trans["welcome"],
-        reply_markup=language_keyboard()
-    )
+    await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
 
 def language_keyboard():
     return InlineKeyboardMarkup([
@@ -251,10 +248,7 @@ async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str):
     trans = load_translations(lang_code)
-    keyboard = ReplyKeyboardMarkup(
-        [[trans["btn_change_lang"], trans["btn_help"]]],
-        resize_keyboard=True
-    )
+    keyboard = ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     text = trans["instruction_initial"]
     target = update.effective_message if update.effective_message else update.message
     await target.reply_text(text, reply_markup=keyboard)
@@ -270,14 +264,11 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await trigger_change_lang(update, context)
     if msg_text == trans["btn_help"]:
         return await trigger_help(update, context)
-    
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
-        keyboard = ReplyKeyboardMarkup(
-            [[trans["btn_convert_pdf"]],
-             [trans["btn_change_lang"], trans["btn_help"]]],
-            resize_keyboard=True
-        )
+        keyboard = ReplyKeyboardMarkup([[trans["btn_convert_pdf"]],
+                                         [trans["btn_change_lang"], trans["btn_help"]]],
+                                        resize_keyboard=True)
         await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
@@ -310,7 +301,6 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
         elif ext == ".pdf":
-            # PDF-ті әр бетке бөліп, сурет ретінде өңдейміз
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
@@ -329,12 +319,9 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # ReplyKeyboard арқылы "Yes"/"No" батырмалары
-    keyboard = ReplyKeyboardMarkup(
-        [[trans["filename_yes"], trans["filename_no"]]],
-        one_time_keyboard=True,
-        resize_keyboard=True
-    )
+    # ReplyKeyboard арқылы "Yes" және "No" батырмалары
+    keyboard = ReplyKeyboardMarkup([[trans["filename_yes"], trans["filename_no"]]],
+                                   one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME_DECISION
 
