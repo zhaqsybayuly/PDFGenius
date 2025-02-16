@@ -36,39 +36,39 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 from PyPDF2 import PdfMerger
 
-# --- Лог конфигурациясы ---
+# --- Logging configuration ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Конфигурация ---
+# --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
+ADMIN_ID = "5316060523"  # Insert your admin ID here
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
-# --- Тілдер ---
+# --- Languages ---
 LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
-# --- Conversation state-тері ---
+# --- Conversation states ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Файл атауын орнату туралы сұрау
-GET_FILENAME_INPUT = 3      # Файл атауын енгізу
+GET_FILENAME_DECISION = 2   # Inline: Ask if user wants to set a file name
+GET_FILENAME_INPUT = 3      # Wait for user to input file name
 
-# --- Шектеулер ---
+# --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 
-# --- Global Data ---
+# --- Global data ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# --- Register Fonts ---
-# EmojiFont: Symbola.ttf қолданылады, егер табылмаса fallback ретінде NotoSans
+# --- Register fonts ---
+# Try to register a font that supports emojis (Symbola), fallback to NotoSans if not found.
 try:
-    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
 except Exception as e:
     logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
@@ -81,7 +81,7 @@ def sanitize_filename(name: str) -> str:
         name = name[:50]
     return name
 
-# --- Translation and Helper Functions ---
+# --- Translation and helper functions ---
 def load_translations(lang_code: str) -> Dict[str, str]:
     try:
         with open(f"translations/{lang_code}.json", "r", encoding="utf-8") as f:
@@ -142,7 +142,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# --- PDF Processing Functions ---
+# --- PDF processing functions ---
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     images = []
     try:
@@ -179,9 +179,8 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             item["content"].seek(0)
             img = Image.open(item["content"])
             img_width, img_height = img.size
-            # Есептелген масштабтау коэффициенті, бірақ scale кемінде 1.0, сондықтан сапасы жоғарыланады
             scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            scale = max(scale, 1.0)
+            scale = max(scale, 1.0)  # scale should be at least 1.0 to preserve quality
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             x = (A4[0] - new_width) / 2
@@ -214,7 +213,7 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User Interface ---
+# --- User interface ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -311,12 +310,15 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# --- Файл атауын сұрау диалогы (ReplyKeyboard) ---
+# --- File name setting dialog (ReplyKeyboard) ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    keyboard = ReplyKeyboardMarkup([[trans["filename_yes"], trans["filename_no"]]], one_time_keyboard=True, resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(
+        [[trans["filename_yes"], trans["filename_no"]]],
+        one_time_keyboard=True, resize_keyboard=True
+    )
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME_DECISION
 
@@ -391,7 +393,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    # Автоматты файл атауын қолданамыз
+    # Automatically set the file name
     file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
@@ -513,8 +515,8 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
 
     application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
