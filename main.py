@@ -36,39 +36,39 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 from PyPDF2 import PdfMerger
 
-# --- Logging configuration ---
+# --- Лог конфигурациясы ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
+# --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Insert your admin ID
+ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
-# --- Languages ---
+# --- Тілдер ---
 LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
-# --- Conversation states ---
+# --- Conversation state-тері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Inline: Ask "Would you like to set a file name?"
-GET_FILENAME_INPUT = 3      # Wait for user to input file name
+GET_FILENAME_DECISION = 2   # Файл атауын орнату туралы сұрау
+GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 
-# --- Limits ---
+# --- Шектеулер ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 
-# --- Global data ---
+# --- Global Data ---
 user_data: Dict[int, Dict[str, Any]] = {}
 
-# --- Register fonts ---
-# Try to register a font that supports emojis (Symbola), fallback to NotoSans if not found.
+# --- Register Fonts ---
+# EmojiFont: Symbola.ttf қолданылады, егер табылмаса fallback ретінде NotoSans
 try:
-    pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
 except Exception as e:
     logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
@@ -81,7 +81,7 @@ def sanitize_filename(name: str) -> str:
         name = name[:50]
     return name
 
-# --- Translation and helper functions ---
+# --- Translation and Helper Functions ---
 def load_translations(lang_code: str) -> Dict[str, str]:
     try:
         with open(f"translations/{lang_code}.json", "r", encoding="utf-8") as f:
@@ -142,7 +142,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# --- PDF processing functions ---
+# --- PDF Processing Functions ---
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     images = []
     try:
@@ -179,9 +179,9 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             item["content"].seek(0)
             img = Image.open(item["content"])
             img_width, img_height = img.size
-            # Есептелген масштабтау: егер сурет кішкентай болса, оны сапасын жоғалтпай үлкейтуге мүмкіндік береміз
+            # Есептелген масштабтау коэффициенті, бірақ scale кемінде 1.0, сондықтан сапасы жоғарыланады
             scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            scale = max(scale, 1.0)  # scale кемінде 1.0
+            scale = max(scale, 1.0)
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             x = (A4[0] - new_width) / 2
@@ -214,7 +214,7 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User interface ---
+# --- User Interface ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -311,36 +311,29 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# --- Файл атауын сұрау диалогы (inline) ---
+# --- Файл атауын сұрау диалогы (ReplyKeyboard) ---
 async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
-         InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
-    ])
+    keyboard = ReplyKeyboardMarkup([[trans["filename_yes"], trans["filename_no"]]], one_time_keyboard=True, resize_keyboard=True)
     await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
     return GET_FILENAME_DECISION
 
-async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    logger.info(f"Filename decision callback data: {query.data}")
-    user_id = query.from_user.id
+async def filename_decision_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_response = update.message.text.strip().lower()
+    logger.info(f"Filename decision received: {user_response}")
+    user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    if query.data == "filename_yes":
-        # Жаңа хабарлама ретінде файл атауын енгізуді сұраймыз
-        chat_id = query.message.chat.id
-        await context.bot.send_message(chat_id=chat_id, text=trans["enter_filename"])
+    if user_response == trans["filename_yes"].lower():
+        await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
         return GET_FILENAME_INPUT
-    elif query.data == "filename_no":
-        # Егер "No" таңдалса, конвертацияны бастаймыз
-        await context.bot.send_message(chat_id=query.message.chat.id, text="Conversion started...")
+    elif user_response == trans["filename_no"].lower():
+        await update.message.reply_text("Conversion started...")
         return await perform_pdf_conversion(update, context, None)
     else:
-        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
+        await update.message.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,6 +391,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
+    # Автоматты файл атауын қолданамыз
     file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
@@ -414,9 +408,6 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     )
     return STATE_ACCUMULATE
 
-async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await convert_pdf_handler_with_name(update, context, None)
-
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -431,7 +422,7 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(trans["help_text"])
     return STATE_ACCUMULATE
 
-# --- Admin panel ---
+# --- Admin Panel ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
@@ -500,7 +491,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Операция тоқтатылды. /start арқылы қайта бастаңыз.")
     return STATE_ACCUMULATE
 
-# --- Main function ---
+# --- Main ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -511,7 +502,7 @@ if __name__ == "__main__":
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
             GET_FILENAME_DECISION: [
-                CallbackQueryHandler(filename_decision_callback, pattern="^filename_")
+                MessageHandler(filters.TEXT & ~filters.COMMAND, filename_decision_handler)
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
@@ -522,8 +513,8 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
 
     application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
+    application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
 
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
