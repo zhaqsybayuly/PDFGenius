@@ -13,5 +13,6 @@
   "ask_filename": "Would you like to set a file name?",
   "filename_yes": "Yes",
   "filename_no": "No",
-  "enter_filename": "Please enter the desired file name:"
+  "enter_filename": "Please enter the desired file name:",
+  "choose_language": "Please select a language:"
 }
