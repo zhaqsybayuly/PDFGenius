@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = "5316060523"  # Өз админ ID-іңізді енгізіңіз
+ADMIN_ID = "5316060523"  # Админ ID-іңізді енгізіңіз
 STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
@@ -52,8 +52,8 @@ LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
 # --- Conversation states ---
-STATE_ACCUMULATE = 1  # Материалдарды жинау және негізгі мәзір
-GET_FILENAME_INPUT = 3  # Файл атауын енгізу
+STATE_ACCUMULATE = 1  # Негізгі күй, материалдар жиналады
+GET_FILENAME_INPUT = 3  # Пайдаланушыдан файл атауын енгізу
 
 # --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -63,11 +63,11 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- Register fonts ---
-# EmojiFont ретінде fonts/Symbola_hint.ttf файлын қолданамыз; егер табылмаса, fallback ретінде NotoSans-ты тіркейміз.
+# Файл: fonts/Symbola.ttf болуы тиіс.
 try:
-    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola_hint.ttf'))
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
 except Exception as e:
-    logger.warning("Symbola_hint.ttf not found, using NotoSans as fallback for EmojiFont")
+    logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
 
 # --- Sanitize filename ---
@@ -175,15 +175,19 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            # Шамамен 1000x1000 пиксель максималды рұқсатпен суретті кішірейту
-            max_resolution = (1000, 1000)
-            img.thumbnail(max_resolution, Image.LANCZOS)
             img_width, img_height = img.size
-            x = (A4[0] - img_width) / 2
-            y = (A4[1] - img_height) / 2
-            c.drawImage(ImageReader(img), x, y, width=img_width, height=img_height)
+            # Есептелген масштабтау: егер сурет үлкен болса, оны A4 бетіне толық сыйғызамыз; егер кіші болса, оригинал өлшемі қолданылады.
+            margin = 40
+            available_width = A4[0] - margin
+            available_height = A4[1] - margin
+            scale = min(1.0, min(available_width / img_width, available_height / img_height))
+            new_width = int(img_width * scale)
+            new_height = int(img_height * scale)
+            x = (A4[0] - new_width) / 2
+            y = (A4[1] - new_height) / 2
+            c.drawImage(ImageReader(img), x, y, width=new_width, height=new_height)
         except Exception as e:
-            c.drawString(40, height/2, f"😢 Error displaying image: {e}")
+            c.drawString(40, height / 2, f"😢 {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -195,7 +199,7 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
         try:
             merger.append(pdf_io)
         except Exception as e:
-            logger.error(f"Skipping invalid PDF file: {e}")
+            logger.error(f"Error merging PDF file: {e}")
     output_buffer = BytesIO()
     merger.write(output_buffer)
     merger.close()
@@ -209,17 +213,14 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User Interface ---
+# --- User Interface Functions ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
-    await update.message.reply_text(
-        f"👋 {trans['welcome']}",
-        reply_markup=language_keyboard()
-    )
+    await update.message.reply_text(f"👋 {trans['welcome']}", reply_markup=language_keyboard())
 
 def language_keyboard():
     return InlineKeyboardMarkup([
@@ -244,8 +245,8 @@ async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str):
     trans = load_translations(lang_code)
     keyboard = ReplyKeyboardMarkup(
-        [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
-         [trans["btn_change_lang"], trans["btn_help"]]],
+        [[f"📄 {trans['btn_convert_pdf']}", f"✏️ {trans['btn_change_filename']}"],
+         [f"🌐 {trans['btn_change_lang']}", f"❓ {trans['btn_help']}"]],
         resize_keyboard=True
     )
     text = trans["instruction_initial"]
@@ -257,20 +258,20 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
-    if msg_text == trans["btn_convert_pdf"]:
+    if msg_text == f"📄 {trans['btn_convert_pdf']}":
         return await convert_pdf_handler(update, context)
-    if msg_text == trans["btn_change_filename"]:
-        await update.message.reply_text(trans["enter_filename"], reply_markup=ReplyKeyboardRemove())
+    if msg_text == f"✏️ {trans['btn_change_filename']}":
+        await update.message.reply_text(f"✏️ {trans['enter_filename']}", reply_markup=ReplyKeyboardRemove())
         return GET_FILENAME_INPUT
-    if msg_text == trans["btn_change_lang"]:
+    if msg_text == f"🌐 {trans['btn_change_lang']}":
         return await trigger_change_lang(update, context)
-    if msg_text == trans["btn_help"]:
+    if msg_text == f"❓ {trans['btn_help']}":
         return await trigger_help(update, context)
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         keyboard = ReplyKeyboardMarkup(
-            [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
-             [trans["btn_change_lang"], trans["btn_help"]]],
+            [[f"📄 {trans['btn_convert_pdf']}", f"✏️ {trans['btn_change_filename']}"],
+             [f"🌐 {trans['btn_change_lang']}", f"❓ {trans['btn_help']}"]],
             resize_keyboard=True
         )
         await update.effective_chat.send_message(trans["instruction_accumulated"], reply_markup=keyboard)
@@ -320,6 +321,10 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
+    # Егер пайдаланушы "↩️ Артқа" деп жазса, негізгі мәзірге қайтамыз
+    if file_name.lower() == "↩️ артқа":
+        await update.message.reply_text("Артқа қайтылды. Әдепкі атау қолданылады.", reply_markup=ReplyKeyboardRemove())
+        return await perform_pdf_conversion(update, context, None)
     file_name = sanitize_filename(file_name)
     logger.info(f"📄 Файл атауы енгізілді: {file_name}")
     return await perform_pdf_conversion(update, context, file_name)
@@ -337,7 +342,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("⚠️ " + trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    loading_msg = await msg.reply_text("⏳ PDF жасалуда...")
+    loading_msg = await msg.reply_text("⌛")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     anim_task = loop.create_task(loading_animation(context, msg.chat.id, loading_msg.message_id, stop_event))
@@ -390,8 +395,8 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     await msg.reply_text(
         trans["instruction_initial"],
         reply_markup=ReplyKeyboardMarkup(
-            [[trans["btn_convert_pdf"], trans["btn_change_filename"]],
-             [trans["btn_change_lang"], trans["btn_help"]]],
+            [[f"📄 {trans['btn_convert_pdf']}", f"✏️ {trans['btn_change_filename']}"],
+             [f"🌐 {trans['btn_change_lang']}", f"❓ {trans['btn_help']}"]],
             resize_keyboard=True
         )
     )
@@ -417,7 +422,6 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Admin Panel (Kazakh) ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Admin панелі әрқашан қазақ тілінде болады
     if str(user_id) != ADMIN_ID:
         await update.message.reply_text("Сіз админ емессіз.")
         return
@@ -505,6 +509,11 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
 
     application.add_handler(CommandHandler("admin", admin_panel))
+    # Admin inline buttons handler for broadcast/forward/cancel:
+    application.add_handler(CallbackQueryHandler(admin_broadcast_handler, pattern="^admin_broadcast"))
+    application.add_handler(CallbackQueryHandler(admin_forward_handler, pattern="^admin_forward"))
+    application.add_handler(CallbackQueryHandler(admin_cancel, pattern="^admin_cancel"))
+
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
