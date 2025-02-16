@@ -10,7 +10,7 @@
   "pdf_ready": "🎉 Your PDF is ready!",
   "help_text": "To use this bot, simply send any file, photo, or text. Use the buttons below for language change or help.",
   "no_items_error": "No items received. Please send a file, photo, or text.",
-  "ask_filename": "Would you like to give the file a custom name?",
+  "ask_filename": "Would you like to set a file name?",
   "filename_yes": "Yes",
   "filename_no": "No",
   "enter_filename": "Please enter the desired file name:"
