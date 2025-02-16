@@ -56,7 +56,7 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Файл атауын беру туралы шешімді сұрау (inline)
+GET_FILENAME_DECISION = 2   # "Yes"/"No" таңдауды сұрау (inline)
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
@@ -142,7 +142,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# Office файлдарын өңдеуді алып тастаймыз
+# --- Office файлдарын өңдеуді алып тастаймыз ---
 
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады."""
@@ -336,8 +336,7 @@ async def filename_decision_callback(update: Update, context: ContextTypes.DEFAU
         await query.edit_message_text(trans["enter_filename"])
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
-        # Егер "No" таңдалса, автоматты түрде әдепкі атау қолданылады
-        return await perform_pdf_conversion(query, context, None)
+        return await perform_pdf_conversion(update, context, None)
     else:
         await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
