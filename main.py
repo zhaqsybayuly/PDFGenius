@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-import subprocess
 import tempfile
 import textwrap
 import asyncio
@@ -17,7 +16,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     Message
 )
 from telegram.ext import (
@@ -55,9 +53,7 @@ LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
-STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # "Yes"/"No" таңдауды сұрау (inline)
-GET_FILENAME_INPUT = 3      # Файл атауын енгізу
+STATE_ACCUMULATE = 1  # Материалдарды жинау және негізгі мәзір күйі
 ADMIN_MENU = 10
 ADMIN_BROADCAST = 11
 ADMIN_FORWARD = 12
@@ -142,8 +138,7 @@ def get_all_users() -> List[int]:
         logger.error(f"Error loading users: {e}")
         return []
 
-# Office файлдарын өңдеуді алып тастаймыз
-
+# --- PDF өңдеу функциялары ---
 def convert_pdf_item_to_images(bio: BytesIO) -> List[BytesIO]:
     """PyMuPDF арқылы PDF-тің әр бетінің суретін PNG форматында шығарып, тізім ретінде қайтарады."""
     images = []
@@ -220,7 +215,7 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 
 # --- Helper: effective message ---
 def get_effective_message(update: Update) -> Message:
-    """update.message жоқ болса, update.callback_query.message пайдаланылады."""
+    """update.message болмаса, update.callback_query.message пайдаланылады."""
     return update.message if update.message is not None else update.callback_query.message
 
 # --- Пайдаланушы интерфейсі ---
@@ -264,7 +259,8 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
     if msg_text == trans["btn_convert_pdf"]:
-        return await ask_filename(update, context)
+        # Тікелей файл атауын сұрамай, автоматты түрде конвертация жасаймыз
+        return await convert_pdf_handler(update, context)
     if msg_text == trans["btn_change_lang"]:
         return await trigger_change_lang(update, context)
     if msg_text == trans["btn_help"]:
@@ -319,42 +315,8 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# --- Файл атауын сұрау диалогы (inline) ---
-async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
-         InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
-    ])
-    await update.message.reply_text(trans["ask_filename"], reply_markup=keyboard)
-    return GET_FILENAME_DECISION
-
-async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    if query.data == "filename_yes":
-        await query.edit_message_text(trans["enter_filename"])
-        return GET_FILENAME_INPUT
-    elif query.data == "filename_no":
-        return await perform_pdf_conversion(update, context, None)
-    else:
-        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
-        return GET_FILENAME_DECISION
-
-async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file_name = update.message.text.strip()
-    file_name = sanitize_filename(file_name)
-    return await perform_pdf_conversion(update, context, file_name)
-
-async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
-    return await convert_pdf_handler_with_name(update, context, file_name)
-
-async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
+# --- Файл атауын енгізуді алып тастап, автоматты түрде конвертация жасаймыз ---
+async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_effective_message(update)
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -400,11 +362,8 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("Жасалған PDF файлдың өлшемі 50 MB-тан көп, материалдарды азайтып көріңіз.")
         return STATE_ACCUMULATE
 
-    if not file_name:
-        file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-    else:
-        if not file_name.lower().endswith(".pdf"):
-            file_name += ".pdf"
+    # Автоматты түрде файл атауын анықтаймыз
+    file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
         document=merged_pdf,
@@ -419,9 +378,6 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         reply_markup=ReplyKeyboardMarkup([[trans["btn_change_lang"], trans["btn_help"]]], resize_keyboard=True)
     )
     return STATE_ACCUMULATE
-
-async def convert_pdf_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await convert_pdf_handler_with_name(update, context, None)
 
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
