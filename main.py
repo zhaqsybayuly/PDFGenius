@@ -333,12 +333,14 @@ async def filename_decision_callback(update: Update, context: ContextTypes.DEFAU
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        await query.edit_message_text(trans["enter_filename"])
+        await query.message.reply_text(trans["enter_filename"])  # query.message пайдалану
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
+        await query.edit_message_text(trans["processing"])
+        # update орнына query.message арқылы контекст алу
         return await perform_pdf_conversion(update, context, None)
     else:
-        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
+        await query.edit_message_text("Please choose...")
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -350,12 +352,13 @@ async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_T
     return await convert_pdf_handler_with_name(update, context, file_name)
 
 async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
+    # Барлық update.message -> update.effective_message
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     items = user_data.get(user_id, {}).get("items", [])
     if not items:
-        await update.message.reply_text(trans["no_items_error"])
+        await update.effective_message.reply_text(trans["no_items_error"])  # effective_message
         return STATE_ACCUMULATE
 
     loading_msg = await update.effective_chat.send_message("⌛")
@@ -400,7 +403,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         if not file_name.lower().endswith(".pdf"):
             file_name += ".pdf"
 
-    await update.message.reply_document(
+   await update.effective_message.reply_document(  # effective_message
         document=merged_pdf,
         filename=file_name,
         caption=trans["pdf_ready"]
