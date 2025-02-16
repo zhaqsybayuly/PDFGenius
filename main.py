@@ -55,9 +55,8 @@ DEFAULT_LANG = "en"
 
 # --- Conversation күйлері ---
 STATE_ACCUMULATE = 1
-GET_FILENAME_DECISION = 2   # Inline: файл атауын орнату туралы сұрау
+GET_FILENAME_DECISION = 2   # Inline: "Yes"/"No" таңдауды сұрау
 GET_FILENAME_INPUT = 3      # Файл атауын енгізу
-# Admin үшін conversation қолданбаймыз
 
 # --- Шектеулер ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -67,9 +66,9 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024   # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- ReportLab қаріптері ---
-# Эмодзилерді қолдау үшін Symbola.ttf-ны тіркеуге тырысамыз, жоқ болса NotoSans-ты қолданамыз
+# Эмодзилерді көрсету үшін Symbola.ttf-ны тіркеуге тырысамыз, ол жоқ болса fallback ретінде NotoSans қолданылады
 try:
-    pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
+    pdfmetrics.registerFont(TTFont('EmojiFont', 'Symbola.ttf'))
 except Exception as e:
     logger.warning("Symbola.ttf not found, using NotoSans as fallback for EmojiFont")
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/NotoSans.ttf'))
@@ -183,11 +182,10 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
         try:
             item["content"].seek(0)
             img = Image.open(item["content"])
-            # Масштабтау: сурет сапасын сақтау, бірақ өлшемді үлкейтуге болады
+            # Есептелген масштабтау: сурет A4 өлшеміне сай келетіндей өңделеді, бірақ сапасы сақталады
             img_width, img_height = img.size
             scale = min((A4[0] - 80) / img_width, (A4[1] - 80) / img_height)
-            # Егер scale төмен болса да, сапасын арттыру үшін оны 1.0-ден кем қылмау
-            scale = max(scale, 1.0)
+            scale = max(scale, 1.0)  # Сапаны жоғарылату үшін scale кемінде 1.0
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             x = (A4[0] - new_width) / 2
@@ -228,7 +226,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    save_user_lang(user_id, lang_code)
+    save_user_lang(user_id, lang_code)  # /start кезінде тілді сақтаймыз
     user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(trans["welcome"], reply_markup=language_keyboard())
 
@@ -325,7 +323,7 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Файл атауын орнату сұрағы: "Would you like to set a file name?"
+    # Мысалы: "Would you like to set a file name?"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(trans["filename_yes"], callback_data="filename_yes"),
          InlineKeyboardButton(trans["filename_no"], callback_data="filename_no")]
@@ -336,26 +334,23 @@ async def ask_filename(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def filename_decision_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    logger.info(f"Filename decision callback triggered with data: {query.data}")
+    logger.info(f"Filename decision callback: {query.data}")
     user_id = query.from_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     if query.data == "filename_yes":
-        # Жаңа хабарлама жіберіп, пайдаланушыдан файл атауын енгізуді сұраймыз.
-        effective_msg = get_effective_message(update)
-        await effective_msg.reply_text(trans["enter_filename"])
+        await query.edit_message_text(trans["enter_filename"])
         return GET_FILENAME_INPUT
     elif query.data == "filename_no":
-        # Егер "No" таңдалса, автоматты түрде әдепкі атаумен PDF жасау функциясын шақырамыз.
         return await perform_pdf_conversion(update, context, None)
     else:
-        effective_msg = get_effective_message(update)
-        await effective_msg.reply_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
+        await query.edit_message_text("Please choose one of the options: " + trans["filename_yes"] + " / " + trans["filename_no"])
         return GET_FILENAME_DECISION
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_name = update.message.text.strip()
     file_name = sanitize_filename(file_name)
+    logger.info(f"Filename input received: {file_name}")
     return await perform_pdf_conversion(update, context, file_name)
 
 async def perform_pdf_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
@@ -467,7 +462,6 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• PDF файлдар саны: {stats.get('pdf_count', 0)}\n"
         f"• Пайдаланушылар саны: {total_users}\n"
     )
-    # Админ панелі үшін инлайн батырмалар қосамыз
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Хабарлама жіберу", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔀 Форвард хабарлама", callback_data="admin_forward")],
@@ -486,7 +480,6 @@ async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_
         except Exception as e:
             logger.error(f"Error sending broadcast to {uid}: {e}")
     await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
-    return
 
 async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_msg: Message = update.message
@@ -499,11 +492,9 @@ async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Error forwarding message to {uid}: {e}")
     await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
-    return
 
 async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Админ панелі жабылды.")
-    return
 
 # --- Фоллбэк ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
