@@ -182,18 +182,19 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             available_width = A4[0] - 2 * margin
             available_height = A4[1] - 2 * margin
             img_width, img_height = img.size
-            # Егер сурет үлкен болса, оны төмендетеміз; егер кіші болса, оригинал өлшемі қолданылады.
             scale = min(1.0, available_width / img_width, available_height / img_height)
             new_width = int(img_width * scale)
             new_height = int(img_height * scale)
             # Орталыққа орналастыру
             x = (A4[0] - new_width) / 2
             y = (A4[1] - new_height) / 2
-            # JPEG компрессиясы арқылы қайта сақтау (quality=90)
+            # Суретті JPEG форматында қайта сақтау
             compressed = BytesIO()
             if scale < 1.0:
                 img = img.resize((new_width, new_height), Image.LANCZOS)
-            img.save(compressed, format="JPEG", quality=90, optimize=True)
+            # Егер сурет кішірейтілсе сапасы 90, әйтпесе 95
+            quality = 90 if scale < 1.0 else 95
+            img.save(compressed, format="JPEG", quality=quality, optimize=True)
             compressed.seek(0)
             comp_img = Image.open(compressed)
             c.drawImage(ImageReader(comp_img), x, y, width=new_width, height=new_height)
@@ -225,13 +226,12 @@ def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
 # --- User Interface Functions ---
-# Main user menu: 4 buttons with emojis.
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     save_user_lang(user_id, lang_code)
-    # Initialize user data; clear rename file state.
+    # Инициализация деректері: файл атауын өзгерту күйі тазаланады.
     user_data[user_id] = {"items": [], "instruction_sent": False, "rename_file": None}
     await update.message.reply_text(f"👋 {trans['welcome']}", reply_markup=language_keyboard())
 
@@ -271,13 +271,13 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
-    # Main menu actions:
+    # Негізгі мәзір әрекеттері:
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         return await convert_pdf_handler(update, context)
     if msg_text == f"✏️ {trans['btn_change_filename']}":
-        # Enter renaming mode: Clear current main menu and show only "↩️ Back" button.
-        # Disable PDF conversion in this mode.
-        await update.message.reply_text("✏️ Файл атауын өзгерту режимі. Өтінемін, қайтадан файлды жіберіңіз немесе '↩️ Back' деп теріңіз:", reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
+        # Файл атауын өзгерту режиміне кіру: тек «↩️ Back» батырмасы көрсетіледі.
+        await update.message.reply_text("✏️ Файл атауын өзгерту режимі. Өтінемін, қайтадан файлды жіберіңіз немесе '↩️ Back' деп теріңіз:",
+                                        reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
         return GET_RENAME_FILE
     if msg_text == f"🌐 {trans['btn_change_lang']}":
         return await trigger_change_lang(update, context)
@@ -294,7 +294,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
 
-# When not in rename mode, accumulate normal items.
+# Файлдарды жинақтау кезінде, әдеттегі хабарламаларды өңдеу.
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if "items" not in user_data.get(user_id, {}):
@@ -335,7 +335,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         user_data[user_id]["items"].append(item)
     save_stats("item")
 
-# Rename mode: GET_RENAME_FILE – wait for file upload (for renaming)
+# Файл атауын өзгерту режимі: GET_RENAME_FILE – файл жіберуді күту.
 async def get_rename_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if update.message.document or update.message.photo:
@@ -351,24 +351,26 @@ async def get_rename_file_handler(update: Update, context: ContextTypes.DEFAULT_
             bio = BytesIO()
             await photo_file.download_to_memory(bio)
             bio.seek(0)
-            # Assign a default extension for photos
+            # Фотосуретке әдепкі кеңейткіш беріледі.
             user_data[user_id]["rename_file"] = {"file": bio, "original_name": "image.jpg"}
-        # In rename mode, show only "↩️ Back" button along with prompt for file name.
-        await update.message.reply_text("✏️ Жаңа файл атауын енгізіңіз (немесе ↩️ Back деп теріңіз):", reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
+        await update.message.reply_text("✏️ Жаңа файл атауын енгізіңіз (немесе '↩️ Back' деп теріңіз):",
+                                        reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
         return GET_FILENAME_INPUT
     else:
-        await update.message.reply_text("⚠️ Өтінемін, файлды жіберіңіз немесе ↩️ Back деп теріңіз:", reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
+        await update.message.reply_text("⚠️ Өтінемін, файлды жіберіңіз немесе '↩️ Back' деп теріңіз:",
+                                        reply_markup=ReplyKeyboardMarkup([["↩️ Back"]], resize_keyboard=True))
         return GET_RENAME_FILE
 
-# Rename mode: GET_FILENAME_INPUT – expect new file name
+# Файл атауын өзгерту режимі: GET_FILENAME_INPUT – жаңа атауды енгізуді күту.
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text_input = update.message.text.strip()
     if text_input.lower() == "↩️ back":
-        await update.message.reply_text("↩️ Артқа қайтылды. Файл атауын өзгерту процесі тоқтатылды.", reply_markup=ReplyKeyboardRemove())
-        # Exit rename mode; PDF conversion uses previously collected items (or default file name)
+        await update.message.reply_text("↩️ Артқа қайтылды. Файл атауын өзгерту процесі тоқтатылды.",
+                                        reply_markup=ReplyKeyboardRemove())
         user_data[user_id]["rename_file"] = None
-        return await perform_pdf_conversion(update, context, None)
+        # PDF-ке айналдыру функциясы іске қосылмайды.
+        return STATE_ACCUMULATE
     new_name = sanitize_filename(text_input)
     # Егер rename_file белсенді болса, оригиналдың кеңейткішін аламыз.
     if user_data[user_id].get("rename_file"):
@@ -388,7 +390,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    # Егер rename_file белсенді болса, тек сол файлды қолданамыз, әйтпесе барлық жинақталған элементтер.
+    # Егер rename_file белсенді болса, тек сол файлды қолданамыз.
     if user_data[user_id].get("rename_file"):
         items = [{"type": "photo", "content": user_data[user_id]["rename_file"]["file"]}]
         user_data[user_id]["rename_file"] = None
@@ -474,7 +476,7 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(trans["help_text"])
     return STATE_ACCUMULATE
 
-# --- Admin Panel (Kazakh) using reply keyboard ---
+# --- Admin Panel ---
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
@@ -509,9 +511,8 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(stat_text, reply_markup=keyboard)
 
-# Admin commands via reply keyboard – simple message handlers.
+# Админ бұйрықтарын өңдеу (reply keyboard түрінде)
 async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler processes admin reply keyboard commands.
     cmd = update.message.text.strip().lower()
     if cmd == "📊 статистика":
         await show_admin_stats(update, context)
@@ -524,9 +525,7 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
     elif cmd == "❌ жабу":
         await update.message.reply_text("Админ панелі жабылды.", reply_markup=ReplyKeyboardRemove())
     else:
-        # Check if admin action is set
         if context.user_data.get("admin_action") == "broadcast":
-            # Send broadcast message
             user_ids = get_all_users()
             sent = 0
             for uid in user_ids:
@@ -539,9 +538,8 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data.pop("admin_action", None)
         elif context.user_data.get("admin_action") == "forward":
             admin_msg: Message = update.message
-            user_ids = get_all_users()
             forwarded = 0
-            for uid in user_ids:
+            for uid in get_all_users():
                 try:
                     await context.bot.copy_message(chat_id=uid, from_chat_id=admin_msg.chat.id, message_id=admin_msg.message_id)
                     forwarded += 1
@@ -552,7 +550,7 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await update.message.reply_text("Админ бұйрығын дұрыс енгізіңіз.")
 
-# --- Fallback for user conversation ---
+# --- Fallback ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_data.pop(user_id, None)
@@ -584,9 +582,7 @@ if __name__ == "__main__":
     # Admin conversation using reply keyboard
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(MessageHandler(filters.Regex("^(📊 Статистика|📢 Хабарлама жіберу|🔀 Форвард хабарлама|❌ Жабу)$"), admin_command_handler))
-
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
