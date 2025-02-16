@@ -52,8 +52,9 @@ LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
 DEFAULT_LANG = "en"
 
 # --- Conversation states ---
-STATE_ACCUMULATE = 1   # Негізгі күй – материалдар жиналады, мәзір көрсетіледі.
-GET_FILENAME_INPUT = 3  # Пайдаланушыдан файл атауын енгізу.
+STATE_ACCUMULATE = 1      # Пайдаланушының негізгі күйі (материалдар жиналады)
+GET_FILENAME_INPUT = 3    # Файл атауын енгізу (қайта жіберу процесі)
+GET_RENAME_FILE = 4       # Файлды қайта жіберуді сұрау (файл атауын өзгерту процесі)
 
 # --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024   # 20 MB
@@ -63,7 +64,6 @@ MAX_OUTPUT_PDF_SIZE = 50 * 1024 * 1024    # 50 MB
 user_data: Dict[int, Dict[str, Any]] = {}
 
 # --- Register fonts ---
-# Файл fonts/Symbola.ttf-ны қолданамыз (оны fonts қалтасында орналастырыңыз)
 try:
     pdfmetrics.registerFont(TTFont('EmojiFont', 'fonts/Symbola.ttf'))
 except Exception as e:
@@ -177,20 +177,20 @@ def generate_item_pdf(item: Dict[str, Any]) -> BytesIO:
             img = Image.open(item["content"])
             if img.mode != "RGB":
                 img = img.convert("RGB")
-            # Қалпына келтіру: суретті максималды 1000x1000 пиксель етіп кішірейтеміз
+            # Өлшемді 1000x1000 пиксельге дейін төмендетіп, JPEG компрессиясын қолданамыз.
             max_resolution = (1000, 1000)
             img.thumbnail(max_resolution, Image.LANCZOS)
-            # Сығу: суретті JPEG форматында 80 сапамен сақтаймыз
             compressed = BytesIO()
             img.save(compressed, format="JPEG", quality=80, optimize=True)
             compressed.seek(0)
             comp_img = Image.open(compressed)
             img_width, img_height = comp_img.size
+            # Орталыққа орналастыру:
             x = (A4[0] - img_width) / 2
             y = (A4[1] - img_height) / 2
             c.drawImage(ImageReader(comp_img), x, y, width=img_width, height=img_height)
         except Exception as e:
-            c.drawString(40, height/2, f"😢 {e}")
+            c.drawString(40, height / 2, f"😢 {e}")
         c.showPage()
     c.save()
     buffer.seek(0)
@@ -216,13 +216,15 @@ async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, me
 def get_effective_message(update: Update) -> Message:
     return update.message if update.message is not None else update.callback_query.message
 
-# --- User Interface Functions ---
+# --- User Interface ---
+# Main menu buttons with emojis:
+# 📄 Convert to PDF, ✏️ Change file name, 🌐 Change language, ❓ Help
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     save_user_lang(user_id, lang_code)
-    user_data[user_id] = {"items": [], "instruction_sent": False}
+    user_data[user_id] = {"items": [], "instruction_sent": False, "rename_file": None}
     await update.message.reply_text(f"👋 {trans['welcome']}", reply_markup=language_keyboard())
 
 def language_keyboard():
@@ -256,6 +258,7 @@ async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT
     msg = get_effective_message(update)
     await msg.reply_text(text, reply_markup=keyboard)
 
+# Main accumulation handler – collects items.
 async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
@@ -264,8 +267,9 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         return await convert_pdf_handler(update, context)
     if msg_text == f"✏️ {trans['btn_change_filename']}":
-        await update.message.reply_text(f"✏️ {trans['enter_filename']}", reply_markup=ReplyKeyboardRemove())
-        return GET_FILENAME_INPUT
+        # Start rename flow: ask admin to send the file to rename.
+        await update.message.reply_text("✏️ Өтінемін, файлды жіберіңіз (немесе ↩️ Back деп теріңіз):", reply_markup=ReplyKeyboardRemove())
+        return GET_RENAME_FILE
     if msg_text == f"🌐 {trans['btn_change_lang']}":
         return await trigger_change_lang(update, context)
     if msg_text == f"❓ {trans['btn_help']}":
@@ -281,10 +285,34 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_data[user_id]["instruction_sent"] = True
     return STATE_ACCUMULATE
 
+# New state: GET_RENAME_FILE – expect file for renaming.
+async def get_rename_file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    # Clear current items and store new file under "rename_file"
+    if update.message.document or update.message.photo:
+        if update.message.document:
+            doc = update.message.document
+            file_obj = await doc.get_file()
+            bio = BytesIO()
+            await file_obj.download_to_memory(bio)
+            bio.seek(0)
+            user_data[user_id]["rename_file"] = {"file": bio, "original_name": doc.file_name}
+        elif update.message.photo:
+            photo_file = await update.message.photo[-1].get_file()
+            bio = BytesIO()
+            await photo_file.download_to_memory(bio)
+            bio.seek(0)
+            user_data[user_id]["rename_file"] = {"file": bio, "original_name": "image.jpg"}
+        await update.message.reply_text("✏️ Файл алынды. Енді жаңа атауды енгізіңіз (немесе ↩️ Back деп теріңіз):")
+        return GET_FILENAME_INPUT
+    else:
+        await update.message.reply_text("⚠️ Файл жіберіңіз, немесе ↩️ Back деп теріңіз.")
+        return GET_RENAME_FILE
+
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if "items" not in user_data.get(user_id, {}):
-        user_data[user_id] = {"items": [], "instruction_sent": False}
+        user_data[user_id] = {"items": [], "instruction_sent": False, "rename_file": None}
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
@@ -300,15 +328,14 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
             await update.message.reply_text("⚠️ Файлдың өлшемі 20 MB-тан аспауы керек.")
             return
-        filename = doc.file_name.lower()
-        ext = os.path.splitext(filename)[1]
+        ext = os.path.splitext(doc.file_name)[1]
         file_obj = await doc.get_file()
         bio = BytesIO()
         await file_obj.download_to_memory(bio)
         bio.seek(0)
-        if ext in [".jpg", ".jpeg", ".png", ".gif"]:
+        if ext.lower() in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
-        elif ext == ".pdf":
+        elif ext.lower() == ".pdf":
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
@@ -323,14 +350,19 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     save_stats("item")
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file_name = update.message.text.strip()
-    if file_name.lower() == "↩️ артқа":
+    user_id = update.effective_user.id
+    text_input = update.message.text.strip()
+    if text_input.lower() == "↩️ артқа":
         await update.message.reply_text("↩️ Артқа қайтылды. Әдепкі атау қолданылады.", reply_markup=ReplyKeyboardRemove())
         return await perform_pdf_conversion(update, context, None)
-    file_name = sanitize_filename(file_name)
-    # Пайдаланушы енгізген атаудан тек негізін алып, соңына ".pdf" қосамыз.
-    base = os.path.splitext(file_name)[0]
-    final_name = base + ".pdf"
+    new_name = sanitize_filename(text_input)
+    # Егер rename_file бар болса, сақталған оригиналдан кеңейткішті аламыз.
+    if user_data[user_id].get("rename_file"):
+        orig = user_data[user_id]["rename_file"].get("original_name", "")
+        ext = os.path.splitext(orig)[1] if orig else ".pdf"
+    else:
+        ext = ".pdf"
+    final_name = new_name + ext
     logger.info(f"📄 Файл атауы енгізілді: {final_name}")
     return await perform_pdf_conversion(update, context, final_name)
 
@@ -342,7 +374,14 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    items = user_data.get(user_id, {}).get("items", [])
+    # Егер rename_file бар болса, PDF-ке тек оны қолданамыз; әйтпесе, барлық жинақталған элементтерді қолданамыз.
+    if user_data[user_id].get("rename_file"):
+        items = [ {"type": "photo", "content": user_data[user_id]["rename_file"]["file"]} ]
+        # Сонда бұрынғы материалдарды өшіріп, жаңасын ғана қолданамыз.
+        user_data[user_id]["items"] = []
+        user_data[user_id]["rename_file"] = None
+    else:
+        items = user_data.get(user_id, {}).get("items", [])
     if not items:
         await msg.reply_text("⚠️ " + trans["no_items_error"])
         return STATE_ACCUMULATE
@@ -355,9 +394,8 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     pdf_list = []
     for item in items:
         try:
-            if item["type"] in ["text", "photo"]:
-                pdf_file = generate_item_pdf(item)
-                pdf_list.append(pdf_file)
+            pdf_file = generate_item_pdf(item)
+            pdf_list.append(pdf_file)
         except Exception as e:
             logger.error(f"❌ PDF жасау қатесі: {e}")
     try:
@@ -380,10 +418,9 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     pdf_size = merged_pdf.tell()
     merged_pdf.seek(0)
     if pdf_size > MAX_OUTPUT_PDF_SIZE:
-        await msg.reply_text("⚠️ Жасалған PDF файлдың өлшемі тым үлкен, материалдарды азайтыңыз.")
+        await msg.reply_text("⚠️ Жасалған PDF тым үлкен, материалдарды азайтыңыз.")
         return STATE_ACCUMULATE
 
-    # Егер пайдаланушы файл атауын енгізсе, оны қолданамыз, әйтпесе автоматты атау.
     if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
     else:
@@ -426,6 +463,11 @@ async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return STATE_ACCUMULATE
 
 # --- Admin Panel (Kazakh) ---
+# Admin conversation handler states for broadcast and forward
+ADMIN_MENU = 10
+ADMIN_BROADCAST = 11
+ADMIN_FORWARD = 12
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
@@ -459,6 +501,15 @@ async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("❌ Жабу", callback_data="admin_cancel")]
     ])
     await update.message.reply_text(stat_text, reply_markup=keyboard)
+    return ADMIN_MENU
+
+# Admin broadcast: when inline button is pressed, ask admin to input message.
+async def admin_broadcast_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("📢 Хабарлама жіберу үшін мәтінді енгізіңіз:")
+    context.user_data["admin_action"] = "broadcast"
+    return ADMIN_BROADCAST
 
 async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_msg = update.message.text
@@ -471,9 +522,19 @@ async def admin_broadcast_handler(update: Update, context: ContextTypes.DEFAULT_
         except Exception as e:
             logger.error(f"Хабарлама жіберу қатесі {uid}: {e}")
     await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
+    context.user_data.pop("admin_action", None)
+    return ADMIN_MENU
+
+# Admin forward: when inline button is pressed, ask admin to input message to forward.
+async def admin_forward_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🔀 Форвардтау үшін, хабарламаны енгізіңіз:")
+    context.user_data["admin_action"] = "forward"
+    return ADMIN_FORWARD
 
 async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin_msg: Message = update.message
+    admin_msg = update.message
     user_ids = get_all_users()
     forwarded = 0
     for uid in user_ids:
@@ -483,22 +544,46 @@ async def admin_forward_handler(update: Update, context: ContextTypes.DEFAULT_TY
         except Exception as e:
             logger.error(f"Форвард қатесі {uid}: {e}")
     await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
+    context.user_data.pop("admin_action", None)
+    return ADMIN_MENU
 
-async def admin_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Админ панелі жабылды.")
+async def admin_cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Админ панелі жабылды.")
+    return ConversationHandler.END
 
-# --- Fallback ---
+# --- Admin Conversation Handler ---
+admin_conv_handler = ConversationHandler(
+    entry_points=[CommandHandler("admin", admin_panel)],
+    states={
+        ADMIN_MENU: [
+            CallbackQueryHandler(admin_broadcast_entry, pattern="^admin_broadcast"),
+            CallbackQueryHandler(admin_forward_entry, pattern="^admin_forward"),
+            CallbackQueryHandler(admin_cancel_handler, pattern="^admin_cancel")
+        ],
+        ADMIN_BROADCAST: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_handler)
+        ],
+        ADMIN_FORWARD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_forward_handler)
+        ]
+    },
+    fallbacks=[CommandHandler("cancel", admin_cancel_handler)]
+)
+
+# --- Fallback for user conversation ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if user_id in user_data:
-        del user_data[user_id]
-    await update.message.reply_text("Операция тоқтатылды. /start арқылы қайта бастаңыз.")
+    user_data.pop(user_id, None)
+    await update.message.reply_text("❌ Операция тоқтатылды. /start арқылы қайта бастаңыз.")
     return STATE_ACCUMULATE
 
 # --- Main ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Main user conversation
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start_handler)],
         states={
@@ -507,18 +592,19 @@ if __name__ == "__main__":
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
+            ],
+            GET_RENAME_FILE: [
+                MessageHandler(filters.ALL & ~filters.COMMAND, get_rename_file_handler)
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
     application.add_handler(conv_handler)
 
-    application.add_handler(CommandHandler("admin", admin_panel))
-    # Admin inline buttons:
+    # Admin conversation
+    application.add_handler(admin_conv_handler)
+
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
-    application.add_handler(CallbackQueryHandler(admin_broadcast_handler, pattern="^admin_broadcast"))
-    application.add_handler(CallbackQueryHandler(admin_forward_handler, pattern="^admin_forward"))
-    application.add_handler(CallbackQueryHandler(admin_cancel, pattern="^admin_cancel"))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
