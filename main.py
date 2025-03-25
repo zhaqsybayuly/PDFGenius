@@ -48,7 +48,7 @@ STATS_FILE = "stats.json"
 USERS_FILE = "users.json"
 
 # --- Languages ---
-LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua"]
+LANGUAGES = ["en", "kz", "ru", "uz", "tr", "ua", "fr"]
 DEFAULT_LANG = "en"
 
 # --- Conversation states ---
@@ -56,6 +56,7 @@ STATE_ACCUMULATE = 1
 ASK_FILENAME = 2
 GET_FILENAME_INPUT = 3
 CHOOSE_QUALITY = 4
+REMOVE_ITEM = 5
 
 # --- Limits ---
 MAX_USER_FILE_SIZE = 20 * 1024 * 1024   # 20 MB
@@ -226,7 +227,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trans = load_translations(lang_code)
     save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False, "quality": 90}
-    await update.message.reply_text(f"👋 {trans['welcome']}", reply_markup=language_keyboard())
+    await update.message.reply_text(f"✨ {trans['welcome']}", reply_markup=language_keyboard())
 
 def language_keyboard():
     return InlineKeyboardMarkup([
@@ -235,7 +236,8 @@ def language_keyboard():
          InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru")],
         [InlineKeyboardButton("🇺🇿 O'zbek", callback_data="lang_uz"),
          InlineKeyboardButton("🇹🇷 Türkçe", callback_data="lang_tr"),
-         InlineKeyboardButton("🇺🇦 Українська", callback_data="lang_ua")]
+         InlineKeyboardButton("🇺🇦 Українська", callback_data="lang_ua")],
+        [InlineKeyboardButton("🇫🇷 Français", callback_data="lang_fr")]
     ])
 
 async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -248,10 +250,13 @@ async def change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"✅ {trans['lang_selected']}")
     await send_initial_instruction(update, context, lang_code)
 
-async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str):
+async def send_initial_instruction(update: Update, context: ContextTypes.DEFAULT_TYPE, lang_code: str = None):
+    user_id = update.effective_user.id
+    if lang_code is None:
+        lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     keyboard = ReplyKeyboardMarkup(
-        [[f"📄 {trans['btn_convert_pdf']}"],
+        [[f"📄 {trans['btn_convert_pdf']}", f"🗑️ {trans['btn_remove_item']}"],
          [f"🌐 {trans['btn_change_lang']}", f"❓ {trans['btn_help']}"]],
         resize_keyboard=True
     )
@@ -264,29 +269,42 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
+    
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         items = user_data.get(user_id, {}).get("items", [])
         if not items:
-            await update.message.reply_text("⚠️ " + trans["no_items_error"])
+            await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
             return STATE_ACCUMULATE
-        # Превью көрсету
-        preview_text = "Жиналған материалдар:\n"
+        preview_text = "📋 Жиналған материалдар:\n"
         for i, item in enumerate(items):
             preview_text += f"{i+1}. {item['type']}\n"
         await update.message.reply_text(preview_text)
-        # Файл атауын сұрау
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Иә", callback_data="yes_filename"),
              InlineKeyboardButton("❌ Жоқ", callback_data="no_filename")]
         ])
-        await update.message.reply_text("Задать название файла?", reply_markup=keyboard)
+        await update.message.reply_text("📝 Задать название файла?", reply_markup=keyboard)
         return ASK_FILENAME
+    
+    if msg_text == f"🗑️ {trans['btn_remove_item']}":
+        items = user_data.get(user_id, {}).get("items", [])
+        if not items:
+            await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
+            return STATE_ACCUMULATE
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{i+1}", callback_data=f"remove_{i}") for i in range(len(items))]
+        ])
+        await update.message.reply_text("🗑️ Жою үшін элементті таңдаңыз:", reply_markup=keyboard)
+        return REMOVE_ITEM
+    
     if msg_text == f"🌐 {trans['btn_change_lang']}":
         await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
         return STATE_ACCUMULATE
+    
     if msg_text == f"❓ {trans['btn_help']}":
-        await update.message.reply_text(trans["help_text"])
+        await update.message.reply_text(f"ℹ️ {trans['help_text']}")
         return STATE_ACCUMULATE
+    
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         await send_initial_instruction(update, context, lang_code)
@@ -295,11 +313,14 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
     if "items" not in user_data.get(user_id, {}):
         user_data[user_id] = {"items": [], "instruction_sent": False, "quality": 90}
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
+        await update.message.reply_text("📝 Мәтін қосылды!")
     elif update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         bio = BytesIO()
@@ -307,6 +328,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
+        await update.message.reply_text("📸 Фото қосылды!")
     elif update.message.document:
         doc = update.message.document
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
@@ -319,18 +341,24 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         if ext in [".jpg", ".jpeg", ".png", ".gif"]:
             item = {"type": "photo", "content": bio}
+            user_data[user_id]["items"].append(item)
+            await update.message.reply_text("📸 Сурет қосылды!")
         elif ext == ".pdf":
             images = convert_pdf_item_to_images(bio)
             if images:
                 for img in images:
                     item = {"type": "photo", "content": img}
                     user_data[user_id]["items"].append(item)
+                await update.message.reply_text("📄 PDF суреттерге бөлінді!")
                 return
             else:
                 item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
+                user_data[user_id]["items"].append(item)
+                await update.message.reply_text("📎 Файл қосылды!")
         else:
             item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
-        user_data[user_id]["items"].append(item)
+            user_data[user_id]["items"].append(item)
+            await update.message.reply_text("📎 Файл қосылды!")
     save_stats("item")
 
 async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -340,7 +368,7 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     trans = load_translations(lang_code)
     await query.answer()
     if query.data == "yes_filename":
-        await query.edit_message_text("Введите имя файла (кеңейткішсіз):")
+        await query.edit_message_text("📝 Файл атауын енгізіңіз (кеңейткішсіз):")
         return GET_FILENAME_INPUT
     elif query.data == "no_filename":
         keyboard = InlineKeyboardMarkup([
@@ -348,7 +376,7 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
              InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
              InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
         ])
-        await query.edit_message_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
+        await query.edit_message_text("🎨 Сурет сапасын таңдаңыз:", reply_markup=keyboard)
         return CHOOSE_QUALITY
     return STATE_ACCUMULATE
 
@@ -364,7 +392,7 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
          InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
          InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
     ])
-    await update.message.reply_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
+    await update.message.reply_text("🎨 Сурет сапасын таңдаңыз:", reply_markup=keyboard)
     return CHOOSE_QUALITY
 
 async def choose_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,8 +408,23 @@ async def choose_quality_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif query.data == "quality_low":
         user_data[user_id]["quality"] = 30
     file_name = user_data[user_id].pop("temp_filename", None)
-    await query.edit_message_text("⌛ PDF өңделуде...")
+    await query.edit_message_text("⌛ PDF дайындалуда...")
     await convert_pdf_handler_with_name(update, context, file_name)
+    return STATE_ACCUMULATE
+
+async def remove_item_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
+    await query.answer()
+    index = int(query.data.split("_")[1])
+    if 0 <= index < len(user_data[user_id]["items"]):
+        user_data[user_id]["items"].pop(index)
+        await query.edit_message_text("🗑️ Элемент жойылды!")
+    else:
+        await query.edit_message_text("⚠️ Қате: элемент табылмады.")
+    await send_initial_instruction(update, context, lang_code)
     return STATE_ACCUMULATE
 
 async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
@@ -391,10 +434,10 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     trans = load_translations(lang_code)
     items = user_data.get(user_id, {}).get("items", [])
     if not items:
-        await msg.reply_text("⚠️ " + trans["no_items_error"])
+        await msg.reply_text(f"⚠️ {trans['no_items_error']}")
         return STATE_ACCUMULATE
 
-    loading_msg = await msg.reply_text("⌛ Өңделуде: 0%")
+    loading_msg = await msg.reply_text("⌛ Дайындалуда: 0%")
     loop = asyncio.get_running_loop()
 
     pdf_list = []
@@ -402,7 +445,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         try:
             pdf_file = generate_item_pdf(item, quality=user_data[user_id]["quality"])
             pdf_list.append(pdf_file)
-            await loading_msg.edit_text(f"⌛ Өңделуде: {int((i+1)/len(items)*100)}%")
+            await loading_msg.edit_text(f"⌛ Дайындалуда: {int((i+1)/len(items)*100)}%")
         except Exception as e:
             logger.error(f"❌ PDF жасау қатесі: {e}")
             await loading_msg.edit_text("❌ PDF жасау кезінде қате шықты.")
@@ -438,28 +481,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     save_stats("pdf")
     user_data[user_id]["items"] = []
     user_data[user_id]["instruction_sent"] = False
-    await msg.reply_text(
-        trans["instruction_initial"],
-        reply_markup=ReplyKeyboardMarkup(
-            [[f"📄 {trans['btn_convert_pdf']}"],
-             [f"🌐 {trans['btn_change_lang']}", f"❓ {trans['btn_help']}"]],
-            resize_keyboard=True
-        )
-    )
-    return STATE_ACCUMULATE
-
-async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
-    return STATE_ACCUMULATE
-
-async def trigger_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    lang_code = get_user_lang(user_id)
-    trans = load_translations(lang_code)
-    await update.message.reply_text(trans["help_text"])
+    await send_initial_instruction(update, context, lang_code)
     return STATE_ACCUMULATE
 
 # --- Admin Panel ---
@@ -470,7 +492,7 @@ ADMIN_FORWARD = 12
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if str(user_id) != ADMIN_ID:
-        await update.message.reply_text("Сіз админ емессіз.")
+        await update.message.reply_text("🚫 Сіз админ емессіз.")
         return
     trans = load_translations("kz")
     await show_admin_stats(update, context)
@@ -512,7 +534,7 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("🔀 Форвардтау үшін хабарламаны енгізіңіз:")
         context.user_data["admin_action"] = "forward"
     elif cmd == "❌ жабу":
-        await update.message.reply_text("Админ панелі жабылды.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("✅ Админ панелі жабылды.", reply_markup=ReplyKeyboardRemove())
     else:
         if context.user_data.get("admin_action") == "broadcast":
             user_ids = get_all_users()
@@ -523,7 +545,7 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     sent += 1
                 except Exception as e:
                     logger.error(f"Хабарлама жіберу қатесі {uid}: {e}")
-            await update.message.reply_text(f"Хабарлама {sent} пайдаланушыға жіберілді.")
+            await update.message.reply_text(f"✅ Хабарлама {sent} пайдаланушыға жіберілді.")
             context.user_data.pop("admin_action", None)
         elif context.user_data.get("admin_action") == "forward":
             admin_msg: Message = update.message
@@ -535,10 +557,10 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
                     forwarded += 1
                 except Exception as e:
                     logger.error(f"Форвард қатесі {uid}: {e}")
-            await update.message.reply_text(f"Хабарлама {forwarded} пайдаланушыға форвардталды.")
+            await update.message.reply_text(f"✅ Хабарлама {forwarded} пайдаланушыға форвардталды.")
             context.user_data.pop("admin_action", None)
         else:
-            await update.message.reply_text("Админ бұйрығын дұрыс енгізіңіз.")
+            await update.message.reply_text("⚠️ Админ бұйрығын дұрыс енгізіңіз.")
 
 admin_conv_handler = ConversationHandler(
     entry_points=[CommandHandler("admin", admin_panel)],
@@ -571,7 +593,8 @@ if __name__ == "__main__":
         entry_points=[CommandHandler("start", start_handler)],
         states={
             STATE_ACCUMULATE: [
-                MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, accumulate_handler),
+                MessageHandler(filters.PHOTO | filters.Document.ALL, accumulate_handler)
             ],
             ASK_FILENAME: [
                 CallbackQueryHandler(ask_filename_handler, pattern="^(yes_filename|no_filename)$")
@@ -581,6 +604,9 @@ if __name__ == "__main__":
             ],
             CHOOSE_QUALITY: [
                 CallbackQueryHandler(choose_quality_handler, pattern="^quality_")
+            ],
+            REMOVE_ITEM: [
+                CallbackQueryHandler(remove_item_handler, pattern="^remove_")
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
