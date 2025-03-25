@@ -196,7 +196,7 @@ async def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     for pdf_io in pdf_list:
         try:
             merger.append(pdf_io)
-        except Exception as e:
+        except Exception:
             pass
     output_buffer = BytesIO()
     await loop.run_in_executor(None, merger.write, output_buffer)
@@ -253,7 +253,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
-    await update.message.reply_text(f"ℹ️ Жіберілген хабарлама: {msg_text}")
+    
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         items = user_data.get(user_id, {}).get("items", [])
         if not items:
@@ -267,10 +267,12 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         await update.message.reply_text("Задать название файла?", reply_markup=keyboard)
         return ASK_FILENAME
+    
     if msg_text == f"🌐 {trans['btn_change_lang']}":
         return await trigger_change_lang(update, context)
     if msg_text == f"❓ {trans['btn_help']}":
         return await trigger_help(update, context)
+    
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         await send_initial_instruction(update, context, lang_code)
@@ -284,7 +286,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
-        await update.message.reply_text(f"ℹ️ Мәтін қосылды: {item['content'][:20]}...")
+        await update.message.reply_text(f"ℹ️ Мәтін қосылды")
     elif update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         bio = BytesIO()
@@ -328,7 +330,7 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     choice = update.message.text.strip()
-    await update.message.reply_text(f"ℹ️ Сіздің таңдауыңыз: {choice}")
+    
     if choice == "✅ Иә":
         await update.message.reply_text("Введите имя файла:")
         return GET_FILENAME_INPUT
@@ -350,7 +352,6 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     text_input = update.message.text.strip()
-    await update.message.reply_text(f"ℹ️ Енгізілген файл атауы: {text_input}")
     new_name = sanitize_filename(text_input) + ".pdf"
     await update.message.reply_text("⌛ PDF жасалуда...")
     await convert_pdf_handler_with_name(update, context, new_name)
@@ -366,20 +367,16 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("⚠️ " + trans["no_items_error"])
         return STATE_ACCUMULATE
 
-    await msg.reply_text(f"ℹ️ Элементтерді PDF-ке айналдыру басталды, саны: {len(items)}")
     pdf_list = []
     for i, item in enumerate(items):
         try:
             pdf_file = generate_item_pdf(item)
             pdf_list.append(pdf_file)
-            await msg.reply_text(f"ℹ️ {i+1}/{len(items)} элемент өңделді")
         except Exception as e:
             await msg.reply_text(f"❌ {i+1}-ші элементті өңдеу қатесі: {e}")
 
-    await msg.reply_text("ℹ️ PDF файлдарды біріктіру басталды")
     try:
         merged_pdf = await merge_pdfs(pdf_list)
-        await msg.reply_text("ℹ️ PDF сәтті біріктірілді")
     except Exception as e:
         await msg.reply_text(f"❌ PDF біріктіру қатесі: {e}")
         merged_pdf = None
@@ -397,7 +394,6 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
 
     if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
-    await msg.reply_text(f"ℹ️ Файл атауы: {file_name}")
 
     await msg.reply_document(
         document=merged_pdf,
@@ -543,7 +539,7 @@ if __name__ == "__main__":
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
             ASK_FILENAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_filename_handler)
+                MessageHandler(filters.Regex(r"^(✅ Иә|❌ Жоқ)$"), ask_filename_handler)
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
@@ -554,7 +550,6 @@ if __name__ == "__main__":
     application.add_handler(conv_handler)
     application.add_handler(admin_conv_handler)
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
