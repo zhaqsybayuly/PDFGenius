@@ -14,15 +14,12 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     Message
 )
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
-    Command #
-
-Handler,
+    CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     ConversationHandler,
@@ -182,7 +179,7 @@ def generate_item_pdf(item: Dict[str, Any], quality: int = 90) -> BytesIO:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             margin = 40
-            available_width = AA[0] - 2 * margin
+            available_width = A4[0] - 2 * margin
             available_height = A4[1] - 2 * margin
             img_width, img_height = img.size
             scale = min(1.0, available_width / img_width, available_height / img_height)
@@ -270,44 +267,47 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    msg_text = update.message.text.strip() if update.message.text else ""
-
-    if msg_text == f"📄 {trans['btn_convert_pdf']}":
-        items = user_data.get(user_id, {}).get("items", [])
-        if not items:
-            await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
+    
+    # Батырмаларды тексеру
+    if update.message and update.message.text:
+        msg_text = update.message.text.strip()
+        
+        if msg_text == f"📄 {trans['btn_convert_pdf']}":
+            items = user_data.get(user_id, {}).get("items", [])
+            if not items:
+                await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
+                return STATE_ACCUMULATE
+            preview_text = "📋 Жиналған материалдар:\n"
+            for i, item in enumerate(items):
+                preview_text += f"{i+1}. {item['type']}\n"
+            await update.message.reply_text(preview_text)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Иә", callback_data="yes_filename"),
+                 InlineKeyboardButton("❌ Жоқ", callback_data="no_filename")]
+            ])
+            await update.message.reply_text("📝 Задать название файла?", reply_markup=keyboard)
+            return ASK_FILENAME
+        
+        if msg_text == f"🗑️ {trans['btn_remove_item']}":
+            items = user_data.get(user_id, {}).get("items", [])
+            if not items:
+                await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
+                return STATE_ACCUMULATE
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{i+1}", callback_data=f"remove_{i}") for i in range(len(items))]
+            ])
+            await update.message.reply_text("🗑️ Жою үшін элементті таңдаңыз:", reply_markup=keyboard)
+            return REMOVE_ITEM
+        
+        if msg_text == f"🌐 {trans['btn_change_lang']}":
+            await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
             return STATE_ACCUMULATE
-        preview_text = "📋 Жиналған материалдар:\n"
-        for i, item in enumerate(items):
-            preview_text += f"{i+1}. {item['type']}\n"
-        await update.message.reply_text(preview_text)
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Иә", callback_data="yes_filename"),
-             InlineKeyboardButton("❌ Жоқ", callback_data="no_filename")]
-        ])
-        await update.message.reply_text("📝 Задать название файла?", reply_markup=keyboard)
-        return ASK_FILENAME
-    
-    elif msg_text == f"🗑️ {trans['btn_remove_item']}":
-        items = user_data.get(user_id, {}).get("items", [])
-        if not items:
-            await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
+        
+        if msg_text == f"❓ {trans['btn_help']}":
+            await update.message.reply_text(f"ℹ️ {trans['help_text']}")
             return STATE_ACCUMULATE
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{i+1}", callback_data=f"remove_{i}") for i in range(len(items))]
-        ])
-        await update.message.reply_text("🗑️ Жою үшін элементті таңдаңыз:", reply_markup=keyboard)
-        return REMOVE_ITEM
     
-    elif msg_text == f"🌐 {trans['btn_change_lang']}":
-        await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
-        return STATE_ACCUMULATE
-    
-    elif msg_text == f"❓ {trans['btn_help']}":
-        await update.message.reply_text(f"ℹ️ {trans['help_text']}")
-        return STATE_ACCUMULATE
-    
-    # Егер батырма емес, контент жіберілсе
+    # Материалдарды қабылдау
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         await send_initial_instruction(update, context, lang_code)
@@ -393,7 +393,7 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬆️ Жоғары", callback_data="quality_high"),
          InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
-         InlineKeyboardButton("�ascynciiInlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
+         InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
     ])
     await update.message.reply_text("🎨 Сурет сапасын таңдаңыз:", reply_markup=keyboard)
     return CHOOSE_QUALITY
@@ -537,7 +537,7 @@ async def admin_command_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("🔀 Форвардтау үшін хабарламаны енгізіңіз:")
         context.user_data["admin_action"] = "forward"
     elif cmd == "❌ жабу":
-        await update.message.reply_text("✅ Админ панелі жабылды.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("✅ Админ панелі жабылды.")
     else:
         if context.user_data.get("admin_action") == "broadcast":
             user_ids = get_all_users()
@@ -569,7 +569,7 @@ admin_conv_handler = ConversationHandler(
     entry_points=[CommandHandler("admin", admin_panel)],
     states={
         ADMIN_MENU: [
-            MessageHandler(filters.Regex("^(📊 Статистика|📢 Хабарлама жіберу|🔀 Форвард хабарлама|❌ Жабу)$"), admin_command_handler)
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_command_handler)
         ],
         ADMIN_BROADCAST: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, admin_command_handler)
@@ -596,8 +596,7 @@ if __name__ == "__main__":
         entry_points=[CommandHandler("start", start_handler)],
         states={
             STATE_ACCUMULATE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, accumulate_handler),
-                MessageHandler(filters.PHOTO | filters.Document.ALL, accumulate_handler)
+                MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
             ASK_FILENAME: [
                 CallbackQueryHandler(ask_filename_handler, pattern="^(yes_filename|no_filename)$")
