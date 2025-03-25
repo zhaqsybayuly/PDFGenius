@@ -226,6 +226,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user_lang(user_id, lang_code)
     user_data[user_id] = {"items": [], "instruction_sent": False}
     await update.message.reply_text(f"👋 {trans['welcome']}", reply_markup=language_keyboard())
+    logger.info(f"User {user_id} started the bot")
 
 def language_keyboard():
     return InlineKeyboardMarkup([
@@ -263,6 +264,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
+    logger.info(f"User {user_id} sent message: {msg_text}")
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         items = user_data.get(user_id, {}).get("items", [])
         if not items:
@@ -292,6 +294,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     if update.message.text and not update.message.photo and not update.message.document:
         item = {"type": "text", "content": update.message.text}
         user_data[user_id]["items"].append(item)
+        logger.info(f"User {user_id} added text item")
     elif update.message.photo:
         photo_file = await update.message.photo[-1].get_file()
         bio = BytesIO()
@@ -299,6 +302,7 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
         bio.seek(0)
         item = {"type": "photo", "content": bio}
         user_data[user_id]["items"].append(item)
+        logger.info(f"User {user_id} added photo item")
     elif update.message.document:
         doc = update.message.document
         if doc.file_size and doc.file_size > MAX_USER_FILE_SIZE:
@@ -317,12 +321,14 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
                 for img in images:
                     item = {"type": "photo", "content": img}
                     user_data[user_id]["items"].append(item)
+                logger.info(f"User {user_id} added PDF as photo items")
                 return
             else:
                 item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
         else:
             item = {"type": "text", "content": f"📎 Файл қосылды: {doc.file_name}"}
         user_data[user_id]["items"].append(item)
+        logger.info(f"User {user_id} added document item")
     save_stats("item")
 
 async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,6 +336,7 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     choice = update.message.text.strip()
+    logger.info(f"User {user_id} chose: {choice}")
     if choice == "✅ Иә":
         await update.message.reply_text("Введите имя файла:")
         return GET_FILENAME_INPUT
@@ -338,12 +345,20 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await convert_pdf_handler_with_name(update, context, None)
         return STATE_ACCUMULATE
     else:
-        await update.message.reply_text("⚠️ 'Иә' немесе 'Жоқ' таңдаңыз:")
+        keyboard = ReplyKeyboardMarkup(
+            [["✅ Иә"], ["❌ Жоқ"]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+        await update.message.reply_text("⚠️ '✅ Иә' немесе '❌ Жоқ' таңдаңыз:", reply_markup=keyboard)
         return ASK_FILENAME
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
     text_input = update.message.text.strip()
+    logger.info(f"User {user_id} entered filename: {text_input}")
     new_name = sanitize_filename(text_input) + ".pdf"
     await update.message.reply_text("⌛ Өңделуде...")
     await convert_pdf_handler_with_name(update, context, new_name)
@@ -365,12 +380,13 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
             pdf_file = generate_item_pdf(item)
             pdf_list.append(pdf_file)
         except Exception as e:
-            logger.error(f"❌ PDF жасау қатесі: {e}")
+            logger.error(f"❌ PDF generation error for user {user_id}: {e}")
 
     try:
         merged_pdf = await merge_pdfs(pdf_list)
+        logger.info(f"User {user_id} successfully merged PDFs")
     except Exception as e:
-        logger.error(f"❌ PDF біріктіру қатесі: {e}")
+        logger.error(f"❌ PDF merging error for user {user_id}: {e}")
         merged_pdf = None
 
     if not merged_pdf:
@@ -403,6 +419,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
             resize_keyboard=True
         )
     )
+    logger.info(f"User {user_id} received PDF: {file_name}")
     return STATE_ACCUMULATE
 
 async def trigger_change_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
