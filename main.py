@@ -216,12 +216,8 @@ def merge_pdfs(pdf_list: List[BytesIO]) -> BytesIO:
     output_buffer.seek(0)
     return output_buffer
 
-async def loading_animation(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, stop_event: asyncio.Event):
-    while not stop_event.is_set():
-        await asyncio.sleep(1)
-
 def get_effective_message(update: Update) -> Message:
-    return update.message if update.message is not None else update.callback_query.message
+    return update.message if update.message else update.callback_query.message
 
 # --- User Interface Functions ---
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,9 +282,11 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Задать название файла?", reply_markup=keyboard)
         return ASK_FILENAME
     if msg_text == f"🌐 {trans['btn_change_lang']}":
-        return await trigger_change_lang(update, context)
+        await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
+        return STATE_ACCUMULATE
     if msg_text == f"❓ {trans['btn_help']}":
-        return await trigger_help(update, context)
+        await update.message.reply_text(trans["help_text"])
+        return STATE_ACCUMULATE
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         await send_initial_instruction(update, context, lang_code)
@@ -340,60 +338,51 @@ async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = query.from_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    await query.answer()  # Callback-қа жауап беру
-    try:
-        if query.data == "yes_filename":
-            await query.message.reply_text("Введите имя файла:")  # Жаңа хабарлама жіберу
-            return GET_FILENAME_INPUT
-        elif query.data == "no_filename":
-            # Сапаны таңдауға бірден өту
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬆️ Жоғары", callback_data="quality_high"),
-                 InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
-                 InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
-            ])
-            await query.message.reply_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
-            return CHOOSE_QUALITY
-    except Exception as e:
-        logger.error(f"Error in ask_filename_handler: {e}")
-        await query.message.reply_text("❌ Қате пайда болды, қайта көріңіз.")
-        return STATE_ACCUMULATE
-
-async def choose_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
     await query.answer()
-    try:
-        if query.data == "quality_high":
-            user_data[user_id]["quality"] = 90
-        elif query.data == "quality_medium":
-            user_data[user_id]["quality"] = 60
-        elif query.data == "quality_low":
-            user_data[user_id]["quality"] = 30
-        await query.message.delete()  # Сапа таңдау хабарламасын жою
-        return await convert_pdf_handler_with_name(update, context, None)
-    except Exception as e:
-        logger.error(f"Error in choose_quality_handler: {e}")
-        await query.message.reply_text("❌ Қате пайда болды, қайта көріңіз.")
-        return STATE_ACCUMULATE
-
-async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text_input = update.message.text.strip()
-    try:
-        new_name = sanitize_filename(text_input)
-        user_data[user_id]["temp_filename"] = new_name + ".pdf"
+    if query.data == "yes_filename":
+        await query.edit_message_text("Введите имя файла (кеңейткішсіз):")
+        return GET_FILENAME_INPUT
+    elif query.data == "no_filename":
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⬆️ Жоғары", callback_data="quality_high"),
              InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
              InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
         ])
-        await update.message.reply_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
+        await query.edit_message_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
         return CHOOSE_QUALITY
-    except Exception as e:
-        logger.error(f"Error in filename_input_handler: {e}")
-        await update.message.reply_text("❌ Қате пайда болды, қайта көріңіз.")
-        return STATE_ACCUMULATE
+    return STATE_ACCUMULATE
+
+async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
+    text_input = update.message.text.strip()
+    new_name = sanitize_filename(text_input) + ".pdf"
+    user_data[user_id]["temp_filename"] = new_name
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬆️ Жоғары", callback_data="quality_high"),
+         InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
+         InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
+    ])
+    await update.message.reply_text("Сурет сапасын таңдаңыз:", reply_markup=keyboard)
+    return CHOOSE_QUALITY
+
+async def choose_quality_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    lang_code = get_user_lang(user_id)
+    trans = load_translations(lang_code)
+    await query.answer()
+    if query.data == "quality_high":
+        user_data[user_id]["quality"] = 90
+    elif query.data == "quality_medium":
+        user_data[user_id]["quality"] = 60
+    elif query.data == "quality_low":
+        user_data[user_id]["quality"] = 30
+    file_name = user_data[user_id].pop("temp_filename", None)
+    await query.edit_message_text("⌛ PDF өңделуде...")
+    await convert_pdf_handler_with_name(update, context, file_name)
+    return STATE_ACCUMULATE
 
 async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DEFAULT_TYPE, file_name: str):
     msg = get_effective_message(update)
@@ -411,19 +400,19 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
     pdf_list = []
     for i, item in enumerate(items):
         try:
-            pdf_file = await loop.run_in_executor(None, generate_item_pdf, item, user_data[user_id]["quality"])
+            pdf_file = generate_item_pdf(item, quality=user_data[user_id]["quality"])
             pdf_list.append(pdf_file)
             await loading_msg.edit_text(f"⌛ Өңделуде: {int((i+1)/len(items)*100)}%")
         except Exception as e:
             logger.error(f"❌ PDF жасау қатесі: {e}")
-            await loading_msg.edit_text("❌ PDF жасау кезінде қате пайда болды.")
+            await loading_msg.edit_text("❌ PDF жасау кезінде қате шықты.")
             return STATE_ACCUMULATE
 
     try:
         merged_pdf = await loop.run_in_executor(None, merge_pdfs, pdf_list)
     except Exception as e:
         logger.error(f"❌ PDF біріктіру қатесі: {e}")
-        await loading_msg.edit_text("❌ PDF біріктіру кезінде қате пайда болды.")
+        await loading_msg.edit_text("❌ PDF біріктіру кезінде қате шықты.")
         return STATE_ACCUMULATE
 
     try:
@@ -438,9 +427,7 @@ async def convert_pdf_handler_with_name(update: Update, context: ContextTypes.DE
         await msg.reply_text("⚠️ Жасалған PDF тым үлкен, материалдарды азайтыңыз.")
         return STATE_ACCUMULATE
 
-    if not file_name and "temp_filename" in user_data[user_id]:
-        file_name = user_data[user_id].pop("temp_filename")
-    elif not file_name:
+    if not file_name:
         file_name = f"combined_{datetime.now().strftime('%Y%m%d%H%M%S')}.pdf"
 
     await msg.reply_document(
@@ -597,11 +584,10 @@ if __name__ == "__main__":
             ]
         },
         fallbacks=[CommandHandler("cancel", cancel)]
-        )
+    )
     application.add_handler(conv_handler)
     application.add_handler(admin_conv_handler)
     application.add_handler(CallbackQueryHandler(change_language, pattern="^lang_"))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler))
 
     if os.environ.get("WEBHOOK_URL"):
         application.run_webhook(
