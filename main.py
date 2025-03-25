@@ -20,7 +20,9 @@ from telegram import (
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
-    CommandHandler,
+    Command #
+
+Handler,
     MessageHandler,
     CallbackQueryHandler,
     ConversationHandler,
@@ -180,7 +182,7 @@ def generate_item_pdf(item: Dict[str, Any], quality: int = 90) -> BytesIO:
             if img.mode != "RGB":
                 img = img.convert("RGB")
             margin = 40
-            available_width = A4[0] - 2 * margin
+            available_width = AA[0] - 2 * margin
             available_height = A4[1] - 2 * margin
             img_width, img_height = img.size
             scale = min(1.0, available_width / img_width, available_height / img_height)
@@ -269,7 +271,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
     msg_text = update.message.text.strip() if update.message.text else ""
-    
+
     if msg_text == f"📄 {trans['btn_convert_pdf']}":
         items = user_data.get(user_id, {}).get("items", [])
         if not items:
@@ -286,7 +288,7 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("📝 Задать название файла?", reply_markup=keyboard)
         return ASK_FILENAME
     
-    if msg_text == f"🗑️ {trans['btn_remove_item']}":
+    elif msg_text == f"🗑️ {trans['btn_remove_item']}":
         items = user_data.get(user_id, {}).get("items", [])
         if not items:
             await update.message.reply_text(f"⚠️ {trans['no_items_error']}")
@@ -297,14 +299,15 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("🗑️ Жою үшін элементті таңдаңыз:", reply_markup=keyboard)
         return REMOVE_ITEM
     
-    if msg_text == f"🌐 {trans['btn_change_lang']}":
+    elif msg_text == f"🌐 {trans['btn_change_lang']}":
         await update.message.reply_text(trans["choose_language"], reply_markup=language_keyboard())
         return STATE_ACCUMULATE
     
-    if msg_text == f"❓ {trans['btn_help']}":
+    elif msg_text == f"❓ {trans['btn_help']}":
         await update.message.reply_text(f"ℹ️ {trans['help_text']}")
         return STATE_ACCUMULATE
     
+    # Егер батырма емес, контент жіберілсе
     await process_incoming_item(update, context)
     if not user_data[user_id].get("instruction_sent", False):
         await send_initial_instruction(update, context, lang_code)
@@ -390,7 +393,7 @@ async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_T
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬆️ Жоғары", callback_data="quality_high"),
          InlineKeyboardButton("➡️ Орташа", callback_data="quality_medium"),
-         InlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
+         InlineKeyboardButton("�ascynciiInlineKeyboardButton("⬇️ Төмен", callback_data="quality_low")]
     ])
     await update.message.reply_text("🎨 Сурет сапасын таңдаңыз:", reply_markup=keyboard)
     return CHOOSE_QUALITY
