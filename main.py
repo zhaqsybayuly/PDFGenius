@@ -268,10 +268,11 @@ async def accumulate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not items:
             await update.message.reply_text("⚠️ " + trans["no_items_error"])
             return STATE_ACCUMULATE
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Иә", callback_data="yes_filename"),
-             InlineKeyboardButton("❌ Жоқ", callback_data="no_filename")]
-        ])
+        keyboard = ReplyKeyboardMarkup(
+            [["✅ Иә"], ["❌ Жоқ"]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
         await update.message.reply_text("Задать название файла?", reply_markup=keyboard)
         return ASK_FILENAME
     if msg_text == f"🌐 {trans['btn_change_lang']}":
@@ -325,18 +326,20 @@ async def process_incoming_item(update: Update, context: ContextTypes.DEFAULT_TY
     save_stats("item")
 
 async def ask_filename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     lang_code = get_user_lang(user_id)
     trans = load_translations(lang_code)
-    await query.answer()
-    if query.data == "yes_filename":
-        await query.edit_message_text("Введите имя файла:")
+    choice = update.message.text.strip()
+    if choice == "✅ Иә":
+        await update.message.reply_text("Введите имя файла:")
         return GET_FILENAME_INPUT
-    elif query.data == "no_filename":
-        await query.edit_message_text("⌛ Өңделуде...")
+    elif choice == "❌ Жоқ":
+        await update.message.reply_text("⌛ Өңделуде...")
         await convert_pdf_handler_with_name(update, context, None)
         return STATE_ACCUMULATE
+    else:
+        await update.message.reply_text("⚠️ 'Иә' немесе 'Жоқ' таңдаңыз:")
+        return ASK_FILENAME
 
 async def filename_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -528,7 +531,7 @@ if __name__ == "__main__":
                 MessageHandler(filters.ALL & ~filters.COMMAND, accumulate_handler)
             ],
             ASK_FILENAME: [
-                CallbackQueryHandler(ask_filename_handler, pattern="^(yes_filename|no_filename)$")
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_filename_handler)
             ],
             GET_FILENAME_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, filename_input_handler)
